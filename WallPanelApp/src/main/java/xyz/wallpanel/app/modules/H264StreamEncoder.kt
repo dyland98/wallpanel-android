@@ -1,0 +1,263 @@
+/*
+ * Copyright (c) 2022 WallPanel
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed
+ * under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package xyz.wallpanel.app.modules
+
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
+import android.media.MediaFormat
+import timber.log.Timber
+import java.nio.ByteBuffer
+
+class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
+
+    private var codec: MediaCodec? = null
+    private var width = 0
+    private var height = 0
+    private var fps = 15
+    private var colorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+    private var sps: ByteArray? = null
+    private var pps: ByteArray? = null
+    private val bufferInfo = MediaCodec.BufferInfo()
+
+    fun submitNv21(frame: ByteArray, frameWidth: Int, frameHeight: Int, frameFps: Float, timestampUs: Long) {
+        if (codec == null || width != frameWidth || height != frameHeight) {
+            restart(frameWidth, frameHeight, frameFps)
+        }
+
+        val encoder = codec ?: return
+        try {
+            val inputIndex = encoder.dequeueInputBuffer(0)
+            if (inputIndex >= 0) {
+                val inputBuffer = encoder.getInputBuffer(inputIndex) ?: return
+                inputBuffer.clear()
+                inputBuffer.putNv21AsEncoderFormat(frame, frameWidth, frameHeight, colorFormat)
+                encoder.queueInputBuffer(inputIndex, 0, frameWidth * frameHeight * 3 / 2, timestampUs, 0)
+            }
+            drainEncoder(encoder)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to encode H264 frame")
+            stop()
+        }
+    }
+
+    fun stop() {
+        try {
+            codec?.stop()
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to stop H264 encoder")
+        }
+        try {
+            codec?.release()
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to release H264 encoder")
+        }
+        codec = null
+        width = 0
+        height = 0
+        sps = null
+        pps = null
+    }
+
+    private fun restart(frameWidth: Int, frameHeight: Int, frameFps: Float) {
+        stop()
+        width = frameWidth
+        height = frameHeight
+        fps = frameFps.toInt().coerceIn(5, 30)
+        colorFormat = selectEncoderColorFormat()
+
+        val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height, fps))
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
+        }
+
+        codec = MediaCodec.createEncoderByType(MIME_TYPE).also {
+            it.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            it.start()
+        }
+        Timber.i("Started H264 encoder ${width}x$height@$fps colorFormat=$colorFormat")
+    }
+
+    private fun drainEncoder(encoder: MediaCodec) {
+        while (true) {
+            val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 0)
+            when {
+                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> return
+                outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    readCodecConfig(encoder.outputFormat)
+                }
+                outputIndex >= 0 -> {
+                    val outputBuffer = encoder.getOutputBuffer(outputIndex)
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        val data = ByteArray(bufferInfo.size)
+                        outputBuffer.position(bufferInfo.offset)
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                        outputBuffer.get(data)
+                        val config = parseCodecConfig(data)
+                        if (config != null) {
+                            sps = config.first
+                            pps = config.second
+                        } else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            frameCallback(
+                                H264Frame(
+                                    data = data,
+                                    timestampUs = bufferInfo.presentationTimeUs,
+                                    isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0,
+                                    sps = sps,
+                                    pps = pps
+                                )
+                            )
+                        }
+                    }
+                    encoder.releaseOutputBuffer(outputIndex, false)
+                }
+            }
+        }
+    }
+
+    private fun readCodecConfig(format: MediaFormat) {
+        sps = format.getByteBuffer("csd-0")?.toByteArrayWithoutPosition()
+        pps = format.getByteBuffer("csd-1")?.toByteArrayWithoutPosition()
+    }
+
+    private fun ByteBuffer.putNv21AsEncoderFormat(nv21: ByteArray, width: Int, height: Int, colorFormat: Int) {
+        when (colorFormat) {
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar -> putNv21AsI420(nv21, width, height)
+            else -> putNv21AsNv12(nv21, width, height)
+        }
+    }
+
+    private fun ByteBuffer.putNv21AsI420(nv21: ByteArray, width: Int, height: Int) {
+        val ySize = width * height
+        put(nv21, 0, ySize)
+        for (i in 0 until ySize / 4) {
+            put(nv21[ySize + i * 2 + 1])
+        }
+        for (i in 0 until ySize / 4) {
+            put(nv21[ySize + i * 2])
+        }
+    }
+
+    private fun ByteBuffer.putNv21AsNv12(nv21: ByteArray, width: Int, height: Int) {
+        val ySize = width * height
+        put(nv21, 0, ySize)
+        for (i in 0 until ySize / 4) {
+            put(nv21[ySize + i * 2 + 1])
+            put(nv21[ySize + i * 2])
+        }
+    }
+
+    private fun ByteBuffer.toByteArrayWithoutPosition(): ByteArray {
+        val duplicate = duplicate()
+        duplicate.position(0)
+        val data = ByteArray(duplicate.remaining())
+        duplicate.get(data)
+        return stripStartCode(data)
+    }
+
+    private fun parseCodecConfig(data: ByteArray): Pair<ByteArray, ByteArray>? {
+        val units = splitAnnexB(data)
+        val foundSps = units.firstOrNull { (it.firstOrNull()?.toInt() ?: 0) and 0x1f == 7 }
+        val foundPps = units.firstOrNull { (it.firstOrNull()?.toInt() ?: 0) and 0x1f == 8 }
+        return if (foundSps != null && foundPps != null) {
+            stripStartCode(foundSps) to stripStartCode(foundPps)
+        } else {
+            null
+        }
+    }
+
+    private fun splitAnnexB(data: ByteArray): List<ByteArray> {
+        val starts = mutableListOf<Pair<Int, Int>>()
+        var i = 0
+        while (i < data.size - 3) {
+            val startCodeLength = startCodeLengthAt(data, i)
+            if (startCodeLength > 0) {
+                starts.add(i to startCodeLength)
+                i += startCodeLength
+            } else {
+                i++
+            }
+        }
+        if (starts.isEmpty()) {
+            return emptyList()
+        }
+        return starts.mapIndexed { index, start ->
+            val nalStart = start.first + start.second
+            val nalEnd = starts.getOrNull(index + 1)?.first ?: data.size
+            data.copyOfRange(nalStart, nalEnd)
+        }.filter { it.isNotEmpty() }
+    }
+
+    private fun stripStartCode(data: ByteArray): ByteArray {
+        val startCodeLength = startCodeLengthAt(data, 0)
+        return if (startCodeLength > 0) data.copyOfRange(startCodeLength, data.size) else data
+    }
+
+    private fun startCodeLengthAt(data: ByteArray, index: Int): Int {
+        return when {
+            index + 3 <= data.size &&
+                data[index] == 0.toByte() &&
+                data[index + 1] == 0.toByte() &&
+                data[index + 2] == 1.toByte() -> 3
+            index + 4 <= data.size &&
+                data[index] == 0.toByte() &&
+                data[index + 1] == 0.toByte() &&
+                data[index + 2] == 0.toByte() &&
+                data[index + 3] == 1.toByte() -> 4
+            else -> 0
+        }
+    }
+
+    private fun bitrateFor(width: Int, height: Int, fps: Int): Int {
+        return (width * height * fps / 8).coerceIn(MIN_BITRATE, MAX_BITRATE)
+    }
+
+    private fun selectEncoderColorFormat(): Int {
+        val codecInfos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        val encoder = codecInfos.firstOrNull { codecInfo ->
+            codecInfo.isEncoder && codecInfo.supportedTypes.any { it.equals(MIME_TYPE, ignoreCase = true) }
+        }
+        val colorFormats = try {
+            encoder?.getCapabilitiesForType(MIME_TYPE)?.colorFormats ?: intArrayOf()
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to read H264 encoder color formats")
+            intArrayOf()
+        }
+
+        val preferredFormats = intArrayOf(
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar,
+            COLOR_QCOM_FORMAT_YUV420_SEMIPLANAR,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+        )
+        return preferredFormats.firstOrNull { colorFormats.contains(it) }
+            ?: MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+    }
+
+    companion object {
+        private const val MIME_TYPE = "video/avc"
+        private const val COLOR_QCOM_FORMAT_YUV420_SEMIPLANAR = 0x7FA30C00
+        private const val I_FRAME_INTERVAL_SECONDS = 2
+        private const val MIN_BITRATE = 500_000
+        private const val MAX_BITRATE = 2_500_000
+    }
+}

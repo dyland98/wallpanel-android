@@ -23,7 +23,6 @@ import android.os.Process.myPid
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.os.StrictMode.VmPolicy
-import androidx.multidex.MultiDex
 import dagger.android.AndroidInjector
 import dagger.android.support.DaggerApplication
 import timber.log.Timber
@@ -72,11 +71,6 @@ class WallPanel : DaggerApplication() {
                     .build()
             )
         }
-    }
-
-    override fun attachBaseContext(base: Context) {
-        super.attachBaseContext(base)
-        MultiDex.install(this)
     }
 
     override fun onLowMemory() {

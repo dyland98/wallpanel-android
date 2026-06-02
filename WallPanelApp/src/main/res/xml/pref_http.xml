@@ -69,4 +69,30 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="@string/pref_rtsp_streaming_title">
+
+        <Preference
+            android:key="@string/key_setting_rtsp_directions"
+            android:textColor="@color/light_gray"
+            android:textSize="12sp"
+            android:selectable="false"
+            android:paddingTop="0dp"
+            android:summary="@string/pref_rtsp_streaming_description"/>
+
+        <SwitchPreference
+            android:defaultValue="@string/default_setting_rtsp_enabled"
+            android:key="@string/key_setting_rtsp_enabled"
+            android:title="@string/title_setting_rtsp_enabled"/>
+
+        <EditTextPreference
+            android:defaultValue="@string/default_setting_rtsp_port"
+            android:inputType="number"
+            android:key="@string/key_setting_rtsp_port"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:title="@string/title_setting_rtsp_port"
+            android:dependency="@string/key_setting_rtsp_enabled"/>
+
+    </PreferenceCategory>
+
 </PreferenceScreen>

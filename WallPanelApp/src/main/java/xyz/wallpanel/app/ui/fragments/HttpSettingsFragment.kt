@@ -40,6 +40,8 @@ class HttpSettingsFragment : BaseSettingsFragment() {
     private var httpMjpegPreference: SwitchPreference? = null
     private var httpMjpegStreamsPreference: EditTextPreference? = null
     private var httpPortPreference: EditTextPreference? = null
+    private var rtspPreference: SwitchPreference? = null
+    private var rtspPortPreference: EditTextPreference? = null
 
 
     override fun onAttach(context: Context) {
@@ -92,16 +94,22 @@ class HttpSettingsFragment : BaseSettingsFragment() {
         httpMjpegPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_http_mjpegenabled)) as SwitchPreference
         httpMjpegStreamsPreference = findPreference<EditTextPreference>(getString(R.string.key_setting_http_mjpegmaxstreams)) as EditTextPreference
         httpPortPreference = findPreference<EditTextPreference>(getString(R.string.key_setting_http_port)) as EditTextPreference
+        rtspPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_rtsp_enabled)) as SwitchPreference
+        rtspPortPreference = findPreference<EditTextPreference>(getString(R.string.key_setting_rtsp_port)) as EditTextPreference
 
         bindPreferenceSummaryToValue(httpRestPreference!!)
         bindPreferenceSummaryToValue(httpMjpegPreference!!)
         bindPreferenceSummaryToValue(httpMjpegStreamsPreference!!)
         bindPreferenceSummaryToValue(httpPortPreference!!)
+        bindPreferenceSummaryToValue(rtspPreference!!)
+        bindPreferenceSummaryToValue(rtspPortPreference!!)
 
         val wm = requireActivity().applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         val ip = Formatter.formatIpAddress(wm.connectionInfo.ipAddress)
 
         val description = findPreference<Preference>(getString(R.string.key_setting_directions)) as Preference
         description.summary = getString(R.string.pref_mjpeg_streaming_description, ip )
+        val rtspDescription = findPreference<Preference>(getString(R.string.key_setting_rtsp_directions)) as Preference
+        rtspDescription.summary = getString(R.string.pref_rtsp_streaming_description, ip )
     }
 }

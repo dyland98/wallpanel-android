@@ -18,7 +18,6 @@ package xyz.wallpanel.app.ui.activities
 
 import android.Manifest
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelProviders
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -33,7 +32,6 @@ import xyz.wallpanel.app.R
 import xyz.wallpanel.app.modules.CameraCallback
 import xyz.wallpanel.app.persistence.Configuration
 import xyz.wallpanel.app.ui.DetectionViewModel
-import xyz.wallpanel.app.ui.views.CameraSourcePreview
 import dagger.android.support.DaggerAppCompatActivity
 import timber.log.Timber
 import xyz.wallpanel.app.databinding.ActivityLiveCameraBinding
@@ -49,7 +47,6 @@ class LiveCameraActivity : DaggerAppCompatActivity() {
     private var updateHandler: Handler? = null
     private var removeTextCountdown: Int = 0
     private val interval = 1000/15L
-    private var preview: CameraSourcePreview? = null
     private var toastShown = false
     private var toast: Toast? = null
 
@@ -84,12 +81,12 @@ class LiveCameraActivity : DaggerAppCompatActivity() {
         if(configuration.hardwareAccelerated && Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP_MR1) {
             window.setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
         }
-        viewModel = ViewModelProviders.of(this, viewModelFactory).get(DetectionViewModel::class.java)
+        viewModel = ViewModelProvider(this, viewModelFactory)[DetectionViewModel::class.java]
 
         // Check for the camera permission before accessing the camera.
         val rc = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
         if (rc == PackageManager.PERMISSION_GRANTED) {
-            viewModel.startCameraPreview(cameraCallback, binding.imageViewPreview)
+            viewModel.startCameraPreview(this, cameraCallback, binding.imageViewPreview)
         } else {
             requestCameraPermission()
         }
@@ -151,7 +148,7 @@ class LiveCameraActivity : DaggerAppCompatActivity() {
             return
         }
         if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            viewModel.startCameraPreview(cameraCallback, preview!!)
+            viewModel.startCameraPreview(this, cameraCallback, binding.imageViewPreview)
             return
         }
         Toast.makeText(this, getString(R.string.toast_write_permissions_denied), Toast.LENGTH_LONG).show()

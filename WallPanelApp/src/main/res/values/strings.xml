@@ -61,6 +61,8 @@
     <string name="title_setting_http_port">HTTP Listening Port</string>
     <string name="title_setting_http_mjpegenabled">MJPEG Camera Streaming</string>
     <string name="title_setting_http_mjpegmaxstreams">MJPEG Camera Max Streams</string>
+    <string name="title_setting_rtsp_enabled">RTSP Camera Streaming</string>
+    <string name="title_setting_rtsp_port">RTSP Listening Port</string>
     <string name="title_setting_mqtt_enabled">Enabled MQTT Client</string>
     <string name="title_setting_mqtt_servername">MQTT Broker Address</string>
     <string name="title_setting_mqtt_serverport">Broker Port Number</string>
@@ -138,6 +140,8 @@
     <string name="pref_motion_luma_description">Minimum brightness level to detect motion. No motion will be detected if brightness falls below this value (1 – 1000).</string>
     <string name="pref_mjpeg_streaming_description">Use the device camera as a live MJPEG stream. Connect to the stream using the device IP address, HTTP Port, and end point: http://%s:2971/camera/stream</string>
     <string name="pref_mjpeg_streaming_title">MJPEG Streaming</string>
+    <string name="pref_rtsp_streaming_description">Use the device camera as an RTSP H.264 stream. Connect to the stream using the device IP address, RTSP Port, and path: rtsp://%s:8554/camera</string>
+    <string name="pref_rtsp_streaming_title">RTSP Streaming</string>
     <string name="pref_http_description">Control the application over HTTP using REST API calls. To find out which commands work with, review the help documentation.</string>
     <string name="pref_launchurl_summary">Enter the fully qualified URL for your home automation dashboard or path to file on the local device (requires storage access permission).</string>
     <string name="pref_show_browser_activity_summary">Display browser loading progress.</string>

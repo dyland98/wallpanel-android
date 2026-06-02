@@ -22,10 +22,11 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import android.hardware.Camera
 import android.util.Log
+import androidx.camera.view.PreviewView
+import androidx.lifecycle.LifecycleOwner
 import xyz.wallpanel.app.modules.CameraCallback
 import xyz.wallpanel.app.modules.CameraReader
 import xyz.wallpanel.app.persistence.Configuration
-import xyz.wallpanel.app.ui.views.CameraSourcePreview
 import timber.log.Timber
 import java.util.*
 import javax.inject.Inject
@@ -88,12 +89,12 @@ constructor(application: Application, private val configuration: Configuration,
         setCameras(cameraList)
     }
 
-    fun startCameraPreview(callback: CameraCallback, preview: CameraSourcePreview?) {
+    fun startCameraPreview(lifecycleOwner: LifecycleOwner, callback: CameraCallback, preview: PreviewView?) {
         Timber.d("startCameraPreview")
         if (configuration.hasCameraDetections()) {
-            cameraReader.startCameraPreview(callback, configuration, preview)
+            cameraReader.startCameraPreview(lifecycleOwner, callback, configuration, preview)
         } else if (configuration.cameraEnabled) {
-            cameraReader.startCameraPreviewSolo(callback, configuration, preview)
+            cameraReader.startCameraPreviewSolo(lifecycleOwner, callback, configuration, preview)
         }
     }
 

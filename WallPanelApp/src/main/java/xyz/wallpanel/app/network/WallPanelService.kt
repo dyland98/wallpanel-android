@@ -47,11 +47,14 @@ import timber.log.Timber
 import xyz.wallpanel.app.R
 import xyz.wallpanel.app.modules.*
 import xyz.wallpanel.app.persistence.Configuration
+import xyz.wallpanel.app.ui.activities.BrowserActivityNative
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_CLEAR_BROWSER_CACHE
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_JS_EXEC
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_LOAD_URL
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_OPEN_SETTINGS
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_RELOAD_PAGE
+import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_KEEP_AWAKE
+import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_TURN_SCREEN_ON
 import xyz.wallpanel.app.utils.MqttUtils
 import xyz.wallpanel.app.utils.MqttUtils.Companion.COMMAND_AUDIO
 import xyz.wallpanel.app.utils.MqttUtils.Companion.COMMAND_BRIGHTNESS
@@ -99,6 +102,8 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
     lateinit var screenUtils: ScreenUtils
 
     private val mJpegSockets = ArrayList<AsyncHttpServerResponse>()
+    private var rtspServer: RtspH264Server? = null
+    private var rtspFrameObserver: Observer<H264Frame>? = null
     private var partialWakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var keyguardLock: KeyguardManager.KeyguardLock? = null
@@ -157,6 +162,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         } else {
             pm.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE, "wallPanel:partialWakeLock")
         }
+        partialWakeLock?.setReferenceCounted(false)
 
         // wifi lock
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -177,6 +183,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         configurePowerOptions()
         configureCamera()
         startHttp()
+        startRtsp()
         configureAudioPlayer()
         configureTextToSpeech()
         startSensors()
@@ -203,6 +210,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         cameraReader?.stopCamera()
         sensorReader.stopReadings()
         stopHttp()
+        stopRtsp()
         stopPowerOptions()
         reconnectHandler.removeCallbacksAndMessages(null)
     }
@@ -388,9 +396,9 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         val cameraEnabled = configuration.cameraEnabled
         if (cameraEnabled && cameraReader == null) {
             cameraReader = CameraReader(applicationContext)
-            cameraReader?.startCamera(cameraDetectorCallback, configuration)
+            cameraReader?.startCamera(this, cameraDetectorCallback, configuration)
         } else if (cameraEnabled) {
-            cameraReader?.startCamera(cameraDetectorCallback, configuration)
+            cameraReader?.startCamera(this, cameraDetectorCallback, configuration)
         }
     }
 
@@ -492,6 +500,35 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         }
     }
 
+    private fun startRtsp() {
+        if (!configuration.rtspEnabled) {
+            stopRtsp()
+            return
+        }
+
+        if (rtspServer == null) {
+            Timber.d("startRtsp")
+            rtspServer = RtspH264Server(configuration.rtspPort).also { server ->
+                server.start()
+                val observer = Observer<H264Frame> { frame ->
+                    server.submitFrame(frame)
+                }
+                rtspFrameObserver = observer
+                cameraReader?.getH264Frame()?.observe(this, observer)
+            }
+        }
+    }
+
+    private fun stopRtsp() {
+        Timber.d("stopRtsp")
+        rtspFrameObserver?.let {
+            cameraReader?.getH264Frame()?.removeObserver(it)
+        }
+        rtspFrameObserver = null
+        rtspServer?.stop()
+        rtspServer = null
+    }
+
     private fun startMJPEG() {
         Timber.d("startMJPEG")
         cameraReader?.let {
@@ -526,12 +563,14 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
             configuration.cameraEnabled = true
             configureCamera()
             startHttp()
+            startRtsp()
             publishDiscovery()
             publishApplicationState()
         } else {
             configuration.cameraEnabled = true
             configureCamera()
             startHttp()
+            startRtsp()
             publishDiscovery()
             publishApplicationState()
         }
@@ -542,6 +581,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         Timber.d("stopCamera")
         configuration.cameraEnabled = false
         stopMJPEG()
+        stopRtsp()
         stopHttp()
         cameraReader?.stopCamera()
         publishDiscovery()
@@ -699,6 +739,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
     // TODO temporarily wake screen
     private fun wakeScreen() {
+        bringBrowserActivityToFront(false)
         val intent = Intent(BROADCAST_SCREEN_WAKE)
         val bm = LocalBroadcastManager.getInstance(applicationContext)
         bm.sendBroadcast(intent)
@@ -706,11 +747,21 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
     @SuppressLint("WakelockTimeout")
     private fun wakeScreenOn(wakeTime: Long) {
-        if (partialWakeLock != null && !partialWakeLock!!.isHeld) {
-            partialWakeLock?.acquire(wakeTime)
-            wakeScreenHandler.postDelayed(clearWakeScreenRunnable, wakeTime)
-            sendWakeScreenOn()
-        }
+        bringBrowserActivityToFront(true)
+        wakeScreenHandler.removeCallbacks(clearWakeScreenRunnable)
+        partialWakeLock?.acquire(wakeTime)
+        wakeScreenHandler.postDelayed(clearWakeScreenRunnable, wakeTime)
+        sendWakeScreenOn()
+    }
+
+    private fun bringBrowserActivityToFront(keepAwake: Boolean) {
+        val intent = Intent(applicationContext, BrowserActivityNative::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        intent.putExtra(EXTRA_TURN_SCREEN_ON, true)
+        intent.putExtra(EXTRA_KEEP_AWAKE, keepAwake)
+        startActivity(intent)
     }
 
     private val clearWakeScreenRunnable = Runnable {
@@ -804,7 +855,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         val deviceJson = JSONObject()
         deviceJson.put("identifiers", listOf("wallpanel_${configuration.mqttClientId}"))
         deviceJson.put("name", configuration.mqttDiscoveryDeviceName)
-        deviceJson.put("manufacturer", Build.MANUFACTURER.toLowerCase().capitalize())
+        deviceJson.put("manufacturer", Build.MANUFACTURER.lowercase(Locale.ROOT).replaceFirstChar { it.uppercase(Locale.ROOT) })
         deviceJson.put("model", Build.MODEL)
         return deviceJson
     }
@@ -821,7 +872,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         try {
             val pInfo: PackageInfo =
                 applicationContext.packageManager.getPackageInfo(applicationContext.packageName, 0)
-            version = pInfo.versionName
+            version = pInfo.versionName.orEmpty()
         } catch (e: PackageManager.NameNotFoundException) {
             e.printStackTrace()
         }
@@ -856,7 +907,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         try {
             val pInfo: PackageInfo =
                 applicationContext.packageManager.getPackageInfo(applicationContext.packageName, 0)
-            version = pInfo.versionName
+            version = pInfo.versionName.orEmpty()
         } catch (e: PackageManager.NameNotFoundException) {
             e.printStackTrace()
         }

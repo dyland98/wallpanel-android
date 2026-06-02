@@ -14,20 +14,12 @@
  * limitations under the License.
  */
 
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
+package xyz.wallpanel.app.modules
 
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-include ':WallPanelApp'
+data class H264Frame(
+    val data: ByteArray,
+    val timestampUs: Long,
+    val isKeyFrame: Boolean,
+    val sps: ByteArray? = null,
+    val pps: ByteArray? = null
+)

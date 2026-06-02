@@ -50,7 +50,7 @@ open class BaseSettingsFragment : PreferenceFragmentCompat(), SharedPreferences.
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
     }
 
-    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String) {
+    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?) {
         //na-da
     }
 

@@ -180,6 +180,21 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
         get() = getBoolPref(R.string.key_setting_http_mjpegenabled,
                 R.string.default_setting_http_mjpegenabled)
 
+    val rtspEnabled: Boolean
+        get() = getBoolPref(R.string.key_setting_rtsp_enabled,
+                R.string.default_setting_rtsp_enabled)
+
+    val rtspPort: Int
+        get() =
+            try {
+                getStringPref(R.string.key_setting_rtsp_port, R.string.default_setting_rtsp_port).trim().toInt()
+            } catch (e: NumberFormatException) {
+                context.getString(R.string.default_setting_rtsp_port).toInt()
+            }
+
+    val cameraJpegStreamingEnabled: Boolean
+        get() = httpMJPEGEnabled
+
     fun setHttpMJPEGEnabled(value: Boolean?) {
         sharedPreferences.edit().putBoolean(context.getString(R.string.key_setting_http_mjpegenabled), value!!).apply()
     }
@@ -357,7 +372,7 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
                 R.string.default_setting_ignore_ssl_errors)
 
     fun hasCameraDetections(): Boolean {
-        return cameraEnabled && (cameraMotionEnabled || cameraQRCodeEnabled || cameraFaceEnabled || httpMJPEGEnabled)
+        return cameraEnabled && (cameraMotionEnabled || cameraQRCodeEnabled || cameraFaceEnabled || cameraJpegStreamingEnabled || rtspEnabled)
     }
 
     private fun getStringPref(resId: Int, defId: Int): String {

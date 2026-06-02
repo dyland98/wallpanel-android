@@ -21,6 +21,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.MenuItem
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import xyz.wallpanel.app.R
 import xyz.wallpanel.app.persistence.Configuration
 import xyz.wallpanel.app.utils.DialogUtils
@@ -44,6 +46,12 @@ class SettingsActivity : DaggerAppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.setDisplayShowHomeEnabled(true)
         supportActionBar?.title = (getString(R.string.title_settings))
+
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.my_nav_host_fragment)) { view, insets ->
+            val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+            view.setPadding(view.paddingLeft, statusBars.top, view.paddingRight, view.paddingBottom)
+            insets
+        }
 
         lifecycle.addObserver(dialogUtils)
     }

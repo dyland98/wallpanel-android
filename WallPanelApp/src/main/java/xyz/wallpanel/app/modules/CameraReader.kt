@@ -19,478 +19,506 @@ package xyz.wallpanel.app.modules
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.hardware.Camera
-import android.os.AsyncTask
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.os.Handler
 import android.os.Looper
-import android.renderscript.*
-import android.view.Surface
-import android.view.WindowManager
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import com.google.android.gms.vision.*
-import com.google.android.gms.vision.CameraSource.CAMERA_FACING_BACK
-import com.google.android.gms.vision.CameraSource.CAMERA_FACING_FRONT
-import com.google.android.gms.vision.barcode.Barcode
-import com.google.android.gms.vision.barcode.BarcodeDetector
-import com.google.android.gms.vision.face.Face
-import com.google.android.gms.vision.face.FaceDetector
-import com.google.android.gms.vision.face.LargestFaceFocusingProcessor
-import xyz.wallpanel.app.persistence.Configuration
-import xyz.wallpanel.app.ui.views.CameraSourcePreview
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.jjoe64.motiondetection.motiondetection.AggregateLumaMotionDetection
+import com.jjoe64.motiondetection.motiondetection.ImageProcessing
 import timber.log.Timber
+import xyz.wallpanel.app.persistence.Configuration
 import java.io.ByteArrayOutputStream
-import java.io.IOException
-import java.lang.ref.WeakReference
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
-
-class CameraReader @Inject
-constructor(private val context: Context) {
+class CameraReader @Inject constructor(private val context: Context) {
 
     private var cameraCallback: CameraCallback? = null
+    private var cameraProvider: ProcessCameraProvider? = null
     private var faceDetector: FaceDetector? = null
-    private var barcodeDetector: BarcodeDetector? = null
-    private var motionDetector: MotionDetector? = null
-    private var multiDetector: MultiDetector? = null
-    private var streamDetector: StreamingDetector? = null
-    private var cameraSource: CameraSource? = null
-    private var faceDetectorProcessor: LargestFaceFocusingProcessor? = null
-    private var barCodeDetectorProcessor: MultiProcessor<Barcode>? = null
-    private var motionDetectorProcessor: MultiProcessor<Motion>? = null
-    private var streamDetectorProcessor: MultiProcessor<Stream>? = null
+    private var barcodeScanner: BarcodeScanner? = null
+    private var aggregateLumaMotionDetection: AggregateLumaMotionDetection? = null
+    private var h264StreamEncoder: H264StreamEncoder? = null
     private val byteArray = MutableLiveData<ByteArray>()
-    private var bitmapComplete = true;
-    private var byteArrayCreateTask: ByteArrayTask? = null
-    private var cameraOrientation: Int = 0
-    private var cameraPreview: CameraSourcePreview? = null
-    private val bitmapCompleteHandler = Handler(Looper.getMainLooper())
-    private val bitcoinCompleteRunnable = Runnable { bitmapComplete = true }
+    private val h264Frame = MutableLiveData<H264Frame>()
+    private var bitmapComplete = true
+    private var byteArrayCreateTask: Future<*>? = null
+    private val jpegExecutor = Executors.newSingleThreadExecutor()
+    private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val bitmapCompleteRunnable = Runnable { bitmapComplete = true }
+    private val faceDetectionInFlight = AtomicBoolean(false)
+    private val barcodeDetectionInFlight = AtomicBoolean(false)
 
     fun getJpeg(): LiveData<ByteArray> {
         return byteArray
     }
 
+    fun getH264Frame(): LiveData<H264Frame> {
+        return h264Frame
+    }
+
     private fun setJpeg(value: ByteArray) {
-        this.byteArray.value = value
+        byteArray.value = value
+    }
+
+    private fun setH264Frame(value: H264Frame) {
+        h264Frame.postValue(value)
     }
 
     fun stopCamera() {
         cameraCallback = null
-
-        cameraPreview?.stop()
-        cameraPreview = null
-        
-        bitmapCompleteHandler.removeCallbacks(bitcoinCompleteRunnable)
+        mainHandler.removeCallbacks(bitmapCompleteRunnable)
 
         byteArrayCreateTask?.cancel(true)
         byteArrayCreateTask = null
 
-        cameraSource?.release()
-        cameraSource = null
+        cameraProvider?.unbindAll()
+        cameraProvider = null
 
-        faceDetector?.release()
+        faceDetector?.close()
         faceDetector = null
 
-        barcodeDetector?.release()
-        barcodeDetector = null
+        barcodeScanner?.close()
+        barcodeScanner = null
 
-        motionDetector?.release()
-        motionDetector = null
+        h264StreamEncoder?.stop()
+        h264StreamEncoder = null
 
-        streamDetector?.release()
-        streamDetector = null
-
-        multiDetector?.release()
-        multiDetector = null
-
-        faceDetectorProcessor?.release()
-        faceDetectorProcessor = null
-
-        barCodeDetectorProcessor?.release()
-        barCodeDetectorProcessor = null
-
-        motionDetectorProcessor?.release()
-        motionDetectorProcessor = null
-
-        streamDetectorProcessor?.release()
-        streamDetectorProcessor = null
+        aggregateLumaMotionDetection = null
+        faceDetectionInFlight.set(false)
+        barcodeDetectionInFlight.set(false)
     }
 
     @SuppressLint("MissingPermission")
-    fun startCamera(callback: CameraCallback, configuration: Configuration) {
+    fun startCamera(lifecycleOwner: LifecycleOwner, callback: CameraCallback, configuration: Configuration) {
         Timber.d("startCamera")
-        this.cameraCallback = callback
         if (configuration.cameraEnabled) {
-            buildDetectors(configuration)
-            multiDetector?.let {
-                try {
-                    cameraSource = initCamera(configuration.cameraId, configuration.cameraFPS)
-                    cameraSource?.start()
-                } catch (e: Exception) {
-                    Timber.e(e.message)
-                    try {
-                        if (configuration.cameraId == CAMERA_FACING_FRONT) {
-                            cameraSource = initCamera(CAMERA_FACING_BACK, configuration.cameraFPS)
-                            cameraSource?.start()
-                        } else {
-                            cameraSource = initCamera(CAMERA_FACING_FRONT, configuration.cameraFPS)
-                            cameraSource?.start()
-                        }
-                    } catch (e: Exception) {
-                        Timber.e(e.message)
-                        cameraSource?.stop()
-                        cameraCallback?.onCameraError()
-                    }
-                }
-            }
+            startCameraInternal(lifecycleOwner, callback, configuration, null, detectionsOnly = false)
         }
     }
 
     @SuppressLint("MissingPermission")
-    @Throws(IOException::class)
-    fun startCameraPreview(callback: CameraCallback, configuration: Configuration, preview: CameraSourcePreview?) {
+    fun startCameraPreview(
+        lifecycleOwner: LifecycleOwner,
+        callback: CameraCallback,
+        configuration: Configuration,
+        preview: PreviewView?
+    ) {
         Timber.d("startCameraPreview")
         if (configuration.cameraEnabled && preview != null) {
-            this.cameraCallback = callback
-            this.cameraPreview = preview
-            buildDetectors(configuration)
-            if (multiDetector != null) {
-                cameraSource = initCamera(configuration.cameraId, configuration.cameraFPS)
-                cameraPreview?.start(cameraSource, object : CameraSourcePreview.OnCameraPreviewListener {
-                    override fun onCameraError() {
-                        Timber.e("Camera Preview Error")
-                        cameraSource = if (configuration.cameraId == CAMERA_FACING_FRONT) {
-                            initCamera(CAMERA_FACING_BACK, configuration.cameraFPS)
-                        } else {
-                            initCamera(CAMERA_FACING_FRONT, configuration.cameraFPS)
-                        }
-                        if (cameraPreview != null) {
-                            try {
-                                cameraPreview?.start(cameraSource, object : CameraSourcePreview.OnCameraPreviewListener {
-                                    override fun onCameraError() {
-                                        Timber.e("Camera Preview Error")
-                                        cameraCallback?.onCameraError()
-                                    }
-                                })
-                            } catch (e: Exception) {
-                                Timber.e(e.message)
-                                cameraPreview?.stop()
-                                cameraSource?.stop()
-                                cameraCallback?.onCameraError()
-                            }
-                        }
-                    }
-                })
-            }
+            startCameraInternal(lifecycleOwner, callback, configuration, preview, detectionsOnly = false)
         }
     }
 
     @SuppressLint("MissingPermission")
-    @Throws(IOException::class)
-    fun startCameraPreviewSolo(callback: CameraCallback, configuration: Configuration, preview: CameraSourcePreview?) {
+    fun startCameraPreviewSolo(
+        lifecycleOwner: LifecycleOwner,
+        callback: CameraCallback,
+        configuration: Configuration,
+        preview: PreviewView?
+    ) {
         Timber.d("startCameraPreviewSolo")
         if (configuration.cameraEnabled && preview != null) {
-            this.cameraCallback = callback
-            this.cameraPreview = preview
-            buildCameraDetector(configuration)
-            if (multiDetector != null) {
-                cameraSource = initCamera(configuration.cameraId, configuration.cameraFPS)
-                cameraPreview?.start(cameraSource, object : CameraSourcePreview.OnCameraPreviewListener {
-                    override fun onCameraError() {
-                        Timber.e("Camera Preview Error")
-                        cameraSource = if (configuration.cameraId == CAMERA_FACING_FRONT) {
-                            initCamera(CAMERA_FACING_BACK, configuration.cameraFPS)
-                        } else {
-                            initCamera(CAMERA_FACING_FRONT, configuration.cameraFPS)
-                        }
-                        if (cameraPreview != null) {
-                            try {
-                                cameraPreview?.start(cameraSource, object : CameraSourcePreview.OnCameraPreviewListener {
-                                    override fun onCameraError() {
-                                        Timber.e("Camera Preview Error")
-                                        cameraCallback?.onCameraError()
-                                    }
-                                })
-                            } catch (e: Exception) {
-                                Timber.e(e.message)
-                                cameraPreview?.stop()
-                                cameraSource?.stop()
-                                cameraCallback?.onCameraError()
-                            }
-                        }
-                    }
-                })
-            }
+            startCameraInternal(lifecycleOwner, callback, configuration, preview, detectionsOnly = true)
         }
     }
 
-    private fun buildCameraDetector(configuration: Configuration) {
-        val info = Camera.CameraInfo()
-        try {
-            Camera.getCameraInfo(configuration.cameraId, info)
-        } catch (e: RuntimeException) {
-            Timber.e(e.message)
-            cameraCallback?.onCameraError()
-            return
-        }
-        cameraOrientation = info.orientation
-        val multiDetectorBuilder = MultiDetector.Builder()
-        var detectorAdded = false
-        if (configuration.cameraEnabled) {
-            streamDetector = StreamingDetector.Builder().build()
-            streamDetectorProcessor = MultiProcessor.Builder<Stream> {
-                object : Tracker<Stream>() {
-                    // na-da
-                }
-            }.build()
-            streamDetector?.setProcessor(streamDetectorProcessor!!)
-            multiDetectorBuilder.add(streamDetector!!)
-            detectorAdded = true
-        }
+    private fun startCameraInternal(
+        lifecycleOwner: LifecycleOwner,
+        callback: CameraCallback,
+        configuration: Configuration,
+        previewView: PreviewView?,
+        detectionsOnly: Boolean
+    ) {
+        stopCamera()
+        cameraCallback = callback
+        buildAnalyzers(configuration, detectionsOnly)
 
-        if (detectorAdded) {
-            multiDetector = multiDetectorBuilder.build()
-        }
-    }
-
-    private fun buildDetectors(configuration: Configuration) {
-        val info = Camera.CameraInfo()
-        try {
-            Camera.getCameraInfo(configuration.cameraId, info)
-        } catch (e: RuntimeException) {
-            Timber.e(e.message)
-            cameraCallback?.onCameraError()
-            return
-        }
-        cameraOrientation = info.orientation
-        val multiDetectorBuilder = MultiDetector.Builder()
-        var detectorAdded = false
-        if (configuration.cameraEnabled && configuration.httpMJPEGEnabled) {
-            val renderScript = RenderScript.create(this.context)
-            streamDetector = StreamingDetector.Builder().build()
-            streamDetectorProcessor = MultiProcessor.Builder<Stream> {
-                object : Tracker<Stream>() {
-                    override fun onUpdate(p0: Detector.Detections<Stream>, stream: Stream) {
-                        super.onUpdate(p0, stream)
-                        if (stream.byteArray != null && bitmapComplete) {
-                            byteArrayCreateTask = ByteArrayTask(context, renderScript, object : OnCompleteListener {
-                                override fun onComplete(byteArray: ByteArray?) {
-                                    byteArray?.let {
-                                        setJpeg(it)
-                                    }
-                                    // For slower FPS settings we lower the rate at which we generate the bitmap to save CPU power by only
-                                    // setting the bitmapComplete flag on a delay based on the current FPS settings
-                                    when {
-                                        configuration.cameraFPS <= 5 -> {
-                                            bitmapCompleteHandler.postDelayed(bitcoinCompleteRunnable, DELAY_5_FPS)
-                                        }
-                                        configuration.cameraFPS <= 10 -> {
-                                            bitmapCompleteHandler.postDelayed(bitcoinCompleteRunnable, DELAY_10_FPS)
-                                        }
-                                        configuration.cameraFPS <= 15 -> {
-                                            bitmapCompleteHandler.postDelayed(bitcoinCompleteRunnable, DELAY_15_FPS)
-                                        }
-                                        configuration.cameraFPS <= 20 -> {
-                                            bitmapCompleteHandler.postDelayed(bitcoinCompleteRunnable, DELAY_20_FPS)
-                                        }
-                                        else -> {
-                                            bitmapComplete = true
-                                        }
-                                    }
-                                }
-                            })
-                            byteArrayCreateTask?.execute(stream.byteArray, stream.width, stream.height, cameraOrientation, configuration.cameraRotate)
-                            bitmapComplete = false
-                        }
-                    }
-                }
-            }.build()
-            streamDetector?.setProcessor(streamDetectorProcessor!!)
-            multiDetectorBuilder.add(streamDetector!!)
-            detectorAdded = true
-        }
-
-        if (configuration.cameraEnabled && configuration.cameraMotionEnabled) {
-            motionDetector = MotionDetector.Builder(configuration.cameraMotionMinLuma, configuration.cameraMotionLeniency).build()
-            motionDetectorProcessor = MultiProcessor.Builder<Motion> {
-                object : Tracker<Motion>() {
-                    override fun onUpdate(p0: Detector.Detections<Motion>, motion: Motion) {
-                        super.onUpdate(p0, motion)
-                        if (cameraCallback != null && configuration.cameraMotionEnabled) {
-                            if (Motion.MOTION_TOO_DARK == motion.type) {
-                                 cameraCallback?.onTooDark()
-                            } else if (Motion.MOTION_DETECTED == motion.type) {
-                                cameraCallback?.onMotionDetected()
-                            }
-                        }
-                    }
-                }
-            }.build()
-            motionDetector?.setProcessor(motionDetectorProcessor!!)
-            multiDetectorBuilder.add(motionDetector!!)
-            detectorAdded = true
-        }
-
-        if (configuration.cameraEnabled && configuration.cameraFaceEnabled) {
+        val providerFuture = ProcessCameraProvider.getInstance(context)
+        providerFuture.addListener({
             try {
-                faceDetector = FaceDetector.Builder(context)
-                        .setProminentFaceOnly(true)
-                        .setTrackingEnabled(false)
-                        .setMode(FaceDetector.FAST_MODE)
-                        .setClassificationType(FaceDetector.NO_CLASSIFICATIONS)
-                        .setLandmarkType(FaceDetector.ALL_LANDMARKS)
-                        .build()
-
-                faceDetectorProcessor = LargestFaceFocusingProcessor(faceDetector!!, object : Tracker<Face>() {
-                    override fun onUpdate(detections: Detector.Detections<Face>, face: Face) {
-                        super.onUpdate(detections, face)
-                        val faceSize = face.width / detections.frameMetadata.width * 100 > configuration.cameraFaceSize;
-                        val faceRotation = if (configuration.cameraFaceRotation) face.eulerY > -12 && face.eulerY < 12 else true;
-                        if (detections.detectedItems.size() > 0 && faceSize && faceRotation) {
-                            if (cameraCallback != null && configuration.cameraFaceEnabled) {
-                                Timber.d("faceDetected")
-                                cameraCallback?.onFaceDetected()
-                            }
-                        }
-                    }
-                })
-                faceDetector?.setProcessor(faceDetectorProcessor!!)
-                multiDetectorBuilder.add(faceDetector!!)
-                detectorAdded = true
+                val provider = providerFuture.get()
+                cameraProvider = provider
+                bindCamera(provider, lifecycleOwner, configuration, previewView)
             } catch (e: Exception) {
-                Timber.e(e)
+                Timber.e(e, "Unable to start camera")
+                cameraCallback?.onCameraError()
             }
-        }
-
-        if (configuration.cameraEnabled && configuration.cameraQRCodeEnabled) {
-            barcodeDetector = BarcodeDetector.Builder(context)
-                    .setBarcodeFormats(Barcode.QR_CODE)
-                    .build()
-            barCodeDetectorProcessor = MultiProcessor.Builder<Barcode>(MultiProcessor.Factory<Barcode> {
-                object : Tracker<Barcode>() {
-                    override fun onUpdate(p0: Detector.Detections<Barcode>, p1: Barcode) {
-                        super.onUpdate(p0, p1)
-                        if (cameraCallback != null && configuration.cameraQRCodeEnabled) {
-                            Timber.d("Barcode: " + p1.displayValue)
-                            cameraCallback?.onQRCode(p1.displayValue)
-                        }
-                    }
-                }
-            }).build()
-            barcodeDetector?.setProcessor(barCodeDetectorProcessor!!)
-            multiDetectorBuilder.add(barcodeDetector!!)
-            detectorAdded = true
-        }
-
-        if (detectorAdded) {
-            multiDetector = multiDetectorBuilder.build()
-            multiDetector?.let {
-                if (it.isOperational.not()) {
-                    cameraCallback?.onDetectorError()
-                }
-            }
-        }
+        }, ContextCompat.getMainExecutor(context))
     }
 
     @SuppressLint("MissingPermission")
-    private fun initCamera(camerId: Int, fsp: Float): CameraSource {
-        return CameraSource.Builder(context, multiDetector!!)
-                .setRequestedFps(fsp)
-                .setAutoFocusEnabled(true)
-                .setRequestedPreviewSize(640, 480)
-                .setFacing(camerId)
+    private fun bindCamera(
+        provider: ProcessCameraProvider,
+        lifecycleOwner: LifecycleOwner,
+        configuration: Configuration,
+        previewView: PreviewView?
+    ) {
+        provider.unbindAll()
+
+        val analysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also {
+                it.setAnalyzer(cameraExecutor) { imageProxy ->
+                    analyzeFrame(imageProxy, configuration)
+                }
+            }
+
+        val preview = previewView?.let {
+            Preview.Builder().build().also { cameraPreview ->
+                cameraPreview.setSurfaceProvider(it.surfaceProvider)
+            }
+        }
+
+        val requestedSelector = cameraSelectorFor(configuration.cameraId)
+        val fallbackSelector = fallbackCameraSelectorFor(configuration.cameraId)
+        try {
+            if (preview != null) {
+                provider.bindToLifecycle(lifecycleOwner, requestedSelector, preview, analysis)
+            } else {
+                provider.bindToLifecycle(lifecycleOwner, requestedSelector, analysis)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to bind requested camera, trying fallback")
+            try {
+                if (preview != null) {
+                    provider.bindToLifecycle(lifecycleOwner, fallbackSelector, preview, analysis)
+                } else {
+                    provider.bindToLifecycle(lifecycleOwner, fallbackSelector, analysis)
+                }
+            } catch (fallbackError: Exception) {
+                Timber.e(fallbackError, "Unable to bind fallback camera")
+                cameraCallback?.onCameraError()
+            }
+        }
+    }
+
+    private fun buildAnalyzers(configuration: Configuration, detectionsOnly: Boolean) {
+        if (!detectionsOnly && configuration.httpMJPEGEnabled) {
+            bitmapComplete = true
+        }
+
+        if (!detectionsOnly && configuration.rtspEnabled) {
+            h264StreamEncoder = H264StreamEncoder { frame ->
+                setH264Frame(frame)
+            }
+        }
+
+        if (!detectionsOnly && configuration.cameraMotionEnabled) {
+            aggregateLumaMotionDetection = AggregateLumaMotionDetection().apply {
+                setLeniency(configuration.cameraMotionLeniency)
+            }
+        }
+
+        if (!detectionsOnly && configuration.cameraFaceEnabled) {
+            val options = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
                 .build()
+            faceDetector = FaceDetection.getClient(options)
+        }
+
+        if (!detectionsOnly && configuration.cameraQRCodeEnabled) {
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+            barcodeScanner = BarcodeScanning.getClient(options)
+        }
     }
 
-    interface OnCompleteListener {
-        fun onComplete(byteArray: ByteArray?)
+    private fun analyzeFrame(imageProxy: ImageProxy, configuration: Configuration) {
+        val width = imageProxy.width
+        val height = imageProxy.height
+        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+        val nv21 = try {
+            imageProxy.toNv21()
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to read camera frame")
+            null
+        } finally {
+            imageProxy.close()
+        } ?: return
+
+        handleMjpegStreaming(nv21, width, height, rotationDegrees, configuration)
+        handleRtspStreaming(nv21, width, height, configuration)
+        handleMotion(nv21, width, height, configuration)
+        handleFaceDetection(nv21, width, height, rotationDegrees, configuration)
+        handleBarcodeDetection(nv21, width, height, rotationDegrees, configuration)
     }
 
-    class ByteArrayTask(context: Context, private val renderScript: RenderScript?, private val onCompleteListener: OnCompleteListener) : AsyncTask<Any, Void, ByteArray>() {
+    private fun handleMjpegStreaming(
+        frameBytes: ByteArray,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int,
+        configuration: Configuration
+    ) {
+        if (!configuration.httpMJPEGEnabled || !bitmapComplete) {
+            return
+        }
 
-        private val contextRef: WeakReference<Context> = WeakReference(context)
-
-        override fun doInBackground(vararg params: Any): ByteArray? {
-            if (isCancelled) {
-                return null
+        bitmapComplete = false
+        byteArrayCreateTask = jpegExecutor.submit {
+            val jpeg = createJpeg(frameBytes, width, height, rotationDegrees, configuration.cameraRotate)
+            mainHandler.post {
+                jpeg?.let { setJpeg(it) }
+                scheduleBitmapComplete(configuration.cameraFPS)
             }
-            val byteArray = params[0] as ByteArray
-            val width = params[1] as Int
-            val height = params[2] as Int
-            val orientation = params[3] as Int
-            val rotation = params[4] as Float
+        }
+    }
 
-            val windowService = contextRef.get()!!.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val currentRotation = windowService.defaultDisplay.rotation
-            val nv21Bitmap = nv21ToBitmap(renderScript, byteArray, width, height)
-            var rotate = orientation
+    private fun handleRtspStreaming(
+        frameBytes: ByteArray,
+        width: Int,
+        height: Int,
+        configuration: Configuration
+    ) {
+        val encoder = h264StreamEncoder ?: return
+        if (!configuration.rtspEnabled) {
+            return
+        }
+        encoder.submitNv21(frameBytes, width, height, configuration.cameraFPS, System.nanoTime() / 1000L)
+    }
 
-            when (currentRotation) {
-                Surface.ROTATION_90 -> {
-                    rotate -= 90
+    private fun handleMotion(frameBytes: ByteArray, width: Int, height: Int, configuration: Configuration) {
+        val detector = aggregateLumaMotionDetection ?: return
+        if (!configuration.cameraMotionEnabled) {
+            return
+        }
+
+        val luma = ImageProcessing.decodeYUV420SPtoLuma(frameBytes, width, height)
+        var lumaSum = 0
+        for (value in luma) {
+            lumaSum += value
+        }
+
+        if (lumaSum < configuration.cameraMotionMinLuma) {
+            mainHandler.post { cameraCallback?.onTooDark() }
+            return
+        }
+
+        try {
+            if (detector.detect(luma, width, height)) {
+                mainHandler.post { cameraCallback?.onMotionDetected() }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to run motion detector")
+        }
+    }
+
+    private fun handleFaceDetection(
+        frameBytes: ByteArray,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int,
+        configuration: Configuration
+    ) {
+        val detector = faceDetector ?: return
+        if (!configuration.cameraFaceEnabled || !faceDetectionInFlight.compareAndSet(false, true)) {
+            return
+        }
+
+        val image = InputImage.fromByteArray(
+            frameBytes,
+            width,
+            height,
+            rotationDegrees,
+            InputImage.IMAGE_FORMAT_NV21
+        )
+        detector.process(image)
+            .addOnSuccessListener { faces ->
+                val matchingFace = faces.firstOrNull { face ->
+                    val faceSize = face.boundingBox.width().toFloat() / width * 100 > configuration.cameraFaceSize
+                    val faceRotation = if (configuration.cameraFaceRotation) {
+                        face.headEulerAngleY > -12 && face.headEulerAngleY < 12
+                    } else {
+                        true
+                    }
+                    faceSize && faceRotation
                 }
-                Surface.ROTATION_180 -> {
-                    rotate -= 180
-                }
-                Surface.ROTATION_270 -> {
-                    rotate -= 270
-                }
-                Surface.ROTATION_0 -> {
-                    // na-da
+                if (matchingFace != null && configuration.cameraFaceEnabled) {
+                    Timber.d("faceDetected")
+                    cameraCallback?.onFaceDetected()
                 }
             }
+            .addOnFailureListener { e ->
+                Timber.e(e, "Unable to run face detector")
+                cameraCallback?.onDetectorError()
+            }
+            .addOnCompleteListener {
+                faceDetectionInFlight.set(false)
+            }
+    }
 
-            rotate %= 360
-            rotate += rotation.toInt()
+    private fun handleBarcodeDetection(
+        frameBytes: ByteArray,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int,
+        configuration: Configuration
+    ) {
+        val scanner = barcodeScanner ?: return
+        if (!configuration.cameraQRCodeEnabled || !barcodeDetectionInFlight.compareAndSet(false, true)) {
+            return
+        }
 
-            val matrix = Matrix()
-            matrix.postRotate(rotate.toFloat())
-            val bitmap = Bitmap.createBitmap(nv21Bitmap, 0, 0, width, height, matrix, true)
+        val image = InputImage.fromByteArray(
+            frameBytes,
+            width,
+            height,
+            rotationDegrees,
+            InputImage.IMAGE_FORMAT_NV21
+        )
+        scanner.process(image)
+            .addOnSuccessListener { barcodes ->
+                barcodes.firstOrNull { it.displayValue != null }?.displayValue?.let { value ->
+                    if (configuration.cameraQRCodeEnabled) {
+                        Timber.d("Barcode: $value")
+                        cameraCallback?.onQRCode(value)
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                Timber.e(e, "Unable to run barcode scanner")
+                cameraCallback?.onDetectorError()
+            }
+            .addOnCompleteListener {
+                barcodeDetectionInFlight.set(false)
+            }
+    }
+
+    private fun ImageProxy.toNv21(): ByteArray {
+        val ySize = width * height
+        val uvSize = ySize / 4
+        val nv21 = ByteArray(ySize + uvSize * 2)
+
+        unpackPlane(planes[0], width, height, nv21, 0, 1)
+        unpackPlane(planes[2], width / 2, height / 2, nv21, ySize, 2)
+        unpackPlane(planes[1], width / 2, height / 2, nv21, ySize + 1, 2)
+
+        return nv21
+    }
+
+    private fun unpackPlane(
+        plane: ImageProxy.PlaneProxy,
+        width: Int,
+        height: Int,
+        output: ByteArray,
+        offset: Int,
+        pixelStride: Int
+    ) {
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val planePixelStride = plane.pixelStride
+        val row = ByteArray(rowStride)
+        var outputOffset = offset
+
+        for (y in 0 until height) {
+            val bytesToRead = if (y == height - 1) {
+                buffer.remaining()
+            } else {
+                rowStride.coerceAtMost(buffer.remaining())
+            }
+            buffer.get(row, 0, bytesToRead)
+            for (x in 0 until width) {
+                output[outputOffset] = row[x * planePixelStride]
+                outputOffset += pixelStride
+            }
+        }
+    }
+
+    private fun cameraSelectorFor(cameraId: Int): CameraSelector {
+        return if (cameraId == CAMERA_FACING_FRONT) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+    }
+
+    private fun fallbackCameraSelectorFor(cameraId: Int): CameraSelector {
+        return if (cameraId == CAMERA_FACING_FRONT) {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        } else {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        }
+    }
+
+    private fun scheduleBitmapComplete(cameraFps: Float) {
+        // For slower FPS settings we lower the rate at which we generate the bitmap to save CPU power.
+        when {
+            cameraFps <= 5 -> mainHandler.postDelayed(bitmapCompleteRunnable, DELAY_5_FPS)
+            cameraFps <= 10 -> mainHandler.postDelayed(bitmapCompleteRunnable, DELAY_10_FPS)
+            cameraFps <= 15 -> mainHandler.postDelayed(bitmapCompleteRunnable, DELAY_15_FPS)
+            cameraFps <= 20 -> mainHandler.postDelayed(bitmapCompleteRunnable, DELAY_20_FPS)
+            else -> bitmapComplete = true
+        }
+    }
+
+    private fun createJpeg(
+        yuvByteArray: ByteArray,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int,
+        rotation: Float
+    ): ByteArray? {
+        val nv21Bitmap = nv21ToBitmap(yuvByteArray, width, height) ?: return null
+        val matrix = Matrix()
+        matrix.postRotate((rotationDegrees + rotation.toInt()).toFloat())
+        val bitmap = Bitmap.createBitmap(nv21Bitmap, 0, 0, width, height, matrix, true)
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+        val byteArrayOut = stream.toByteArray()
+        bitmap.recycle()
+        nv21Bitmap.recycle()
+
+        return byteArrayOut
+    }
+
+    private fun nv21ToBitmap(yuvByteArray: ByteArray, width: Int, height: Int): Bitmap? {
+        return try {
+            val image = YuvImage(yuvByteArray, ImageFormat.NV21, width, height, null)
             val stream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-            val byteArrayOut = stream.toByteArray()
-            bitmap.recycle()
-
-            return byteArrayOut
-        }
-
-        override fun onPostExecute(result: ByteArray?) {
-            super.onPostExecute(result)
-            if (isCancelled) {
-                return
-            }
-            onCompleteListener.onComplete(result)
-        }
-
-        private fun nv21ToBitmap(rs: RenderScript?, yuvByteArray: ByteArray, width: Int, height: Int): Bitmap {
-
-            val yuvToRgbIntrinsic = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs))
-
-            val yuvType = Type.Builder(rs, Element.U8(rs)).setX(yuvByteArray.size)
-            val allocationIn = Allocation.createTyped(rs, yuvType.create(), Allocation.USAGE_SCRIPT)
-
-            val rgbaType = Type.Builder(rs, Element.RGBA_8888(rs)).setX(width).setY(height)
-            val allocationOut = Allocation.createTyped(rs, rgbaType.create(), Allocation.USAGE_SCRIPT)
-
-            allocationIn.copyFrom(yuvByteArray)
-
-            yuvToRgbIntrinsic.setInput(allocationIn)
-            yuvToRgbIntrinsic.forEach(allocationOut)
-
-            val bmpout = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            allocationOut.copyTo(bmpout)
-
-            return bmpout
+            image.compressToJpeg(Rect(0, 0, width, height), 80, stream)
+            val jpeg = stream.toByteArray()
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to convert camera frame to bitmap")
+            null
         }
     }
 
     companion object {
+        private const val CAMERA_FACING_BACK = 0
+        private const val CAMERA_FACING_FRONT = 1
         const val DELAY_20_FPS = (100 * 2).toLong() // 200 milliseconds
         const val DELAY_15_FPS = (100 * 3).toLong() // 300 milliseconds
         const val DELAY_10_FPS = (100 * 4).toLong() // 400 milliseconds
         const val DELAY_5_FPS = (100 * 5).toLong() // 500 milliseconds
-
     }
 }

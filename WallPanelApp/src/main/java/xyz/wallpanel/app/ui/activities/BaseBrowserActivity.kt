@@ -116,16 +116,17 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
                     resetScreenBrightness(false)
                 }
             } else if (BROADCAST_SCREEN_WAKE == intent.action && !isFinishing) {
+                turnScreenOn(false)
                 stopDisconnectTimer()
             } else if (BROADCAST_SCREEN_WAKE_ON == intent.action && !isFinishing) {
                 hasWakeScreen = true
+                turnScreenOn(true)
                 resetScreenBrightness(false)
                 clearInactivityTimer()
-                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             } else if (BROADCAST_SCREEN_WAKE_OFF == intent.action && !isFinishing) {
                 hasWakeScreen = false
                 resetInactivityTimer()
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                clearWakeScreenFlags()
             } else if (BROADCAST_ACTION_RELOAD_PAGE == intent.action && !isFinishing) {
                 hideScreenSaver()
             } else if (BROADCAST_SERVICE_STARTED == intent.action && !isFinishing) {
@@ -141,7 +142,6 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         displayProgress = configuration.appShowActivity
         zoomLevel = configuration.testZoomLevel
 
-        window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
 
@@ -149,9 +149,54 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
         lifecycle.addObserver(dialogUtils)
 
+        handleWakeIntent(intent)
+
         onUserInteraction()
 
         Thread.setDefaultUncaughtExceptionHandler(AppExceptionHandler(this))
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleWakeIntent(intent)
+    }
+
+    private fun handleWakeIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_TURN_SCREEN_ON, false) == true) {
+            val keepAwake = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, false)
+            if (keepAwake) {
+                hasWakeScreen = true
+                clearInactivityTimer()
+            }
+            turnScreenOn(keepAwake)
+            resetScreenBrightness(false)
+        }
+    }
+
+    private fun turnScreenOn(keepAwake: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                        or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
+        if (keepAwake) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            decorView?.keepScreenOn = true
+        }
+    }
+
+    private fun clearWakeScreenFlags() {
+        if (!configuration.appPreventSleep) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            decorView?.keepScreenOn = false
+        }
     }
 
     override fun onResume() {
@@ -365,6 +410,8 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         const val BROADCAST_ACTION_CLEAR_BROWSER_CACHE = "BROADCAST_ACTION_CLEAR_BROWSER_CACHE"
         const val BROADCAST_ACTION_RELOAD_PAGE = "BROADCAST_ACTION_RELOAD_PAGE"
         const val BROADCAST_ACTION_OPEN_SETTINGS = "BROADCAST_ACTION_OPEN_SETTINGS"
+        const val EXTRA_TURN_SCREEN_ON = "EXTRA_TURN_SCREEN_ON"
+        const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
         const val REQUEST_CODE_PERMISSION_AUDIO = 12
         const val REQUEST_CODE_PERMISSION_CAMERA = 13
     }
