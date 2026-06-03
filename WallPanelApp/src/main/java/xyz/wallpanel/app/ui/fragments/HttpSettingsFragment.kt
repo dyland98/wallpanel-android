@@ -29,6 +29,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
 import androidx.navigation.Navigation
+import androidx.preference.ListPreference
 import xyz.wallpanel.app.R
 import xyz.wallpanel.app.ui.activities.SettingsActivity
 import dagger.android.support.AndroidSupportInjection
@@ -42,6 +43,10 @@ class HttpSettingsFragment : BaseSettingsFragment() {
     private var httpPortPreference: EditTextPreference? = null
     private var rtspPreference: SwitchPreference? = null
     private var rtspPortPreference: EditTextPreference? = null
+    private var rtspSubstreamResolutionPreference: ListPreference? = null
+    private var rtspSubstreamFpsPreference: ListPreference? = null
+    private var rtspMainstreamResolutionPreference: ListPreference? = null
+    private var rtspMainstreamFpsPreference: ListPreference? = null
 
 
     override fun onAttach(context: Context) {
@@ -96,6 +101,10 @@ class HttpSettingsFragment : BaseSettingsFragment() {
         httpPortPreference = findPreference<EditTextPreference>(getString(R.string.key_setting_http_port)) as EditTextPreference
         rtspPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_rtsp_enabled)) as SwitchPreference
         rtspPortPreference = findPreference<EditTextPreference>(getString(R.string.key_setting_rtsp_port)) as EditTextPreference
+        rtspSubstreamResolutionPreference = findPreference<ListPreference>(getString(R.string.key_setting_rtsp_substream_resolution)) as ListPreference
+        rtspSubstreamFpsPreference = findPreference<ListPreference>(getString(R.string.key_setting_rtsp_substream_fps)) as ListPreference
+        rtspMainstreamResolutionPreference = findPreference<ListPreference>(getString(R.string.key_setting_rtsp_mainstream_resolution)) as ListPreference
+        rtspMainstreamFpsPreference = findPreference<ListPreference>(getString(R.string.key_setting_rtsp_mainstream_fps)) as ListPreference
 
         bindPreferenceSummaryToValue(httpRestPreference!!)
         bindPreferenceSummaryToValue(httpMjpegPreference!!)
@@ -103,6 +112,10 @@ class HttpSettingsFragment : BaseSettingsFragment() {
         bindPreferenceSummaryToValue(httpPortPreference!!)
         bindPreferenceSummaryToValue(rtspPreference!!)
         bindPreferenceSummaryToValue(rtspPortPreference!!)
+        bindPreferenceSummaryToValue(rtspSubstreamResolutionPreference!!)
+        bindPreferenceSummaryToValue(rtspSubstreamFpsPreference!!)
+        bindPreferenceSummaryToValue(rtspMainstreamResolutionPreference!!)
+        bindPreferenceSummaryToValue(rtspMainstreamFpsPreference!!)
 
         val wm = requireActivity().applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         val ip = Formatter.formatIpAddress(wm.connectionInfo.ipAddress)
@@ -110,6 +123,6 @@ class HttpSettingsFragment : BaseSettingsFragment() {
         val description = findPreference<Preference>(getString(R.string.key_setting_directions)) as Preference
         description.summary = getString(R.string.pref_mjpeg_streaming_description, ip )
         val rtspDescription = findPreference<Preference>(getString(R.string.key_setting_rtsp_directions)) as Preference
-        rtspDescription.summary = getString(R.string.pref_rtsp_streaming_description, ip )
+        rtspDescription.summary = getString(R.string.pref_rtsp_streaming_description, ip, ip )
     }
 }

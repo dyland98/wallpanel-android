@@ -20,21 +20,23 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import timber.log.Timber
 import java.nio.ByteBuffer
 
-class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
+class H264StreamEncoder(private val stream: RtspStream, private val frameCallback: (H264Frame) -> Unit) {
 
     private var codec: MediaCodec? = null
     private var width = 0
     private var height = 0
     private var fps = 15
+    private var bitrate = 0
     private var colorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private val bufferInfo = MediaCodec.BufferInfo()
 
-    fun submitNv21(frame: ByteArray, frameWidth: Int, frameHeight: Int, frameFps: Float, timestampUs: Long) {
+    fun submitNv21(frame: ByteArray, frameWidth: Int, frameHeight: Int, frameFps: Int, timestampUs: Long) {
         if (codec == null || width != frameWidth || height != frameHeight) {
             restart(frameWidth, frameHeight, frameFps)
         }
@@ -73,25 +75,65 @@ class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
         pps = null
     }
 
-    private fun restart(frameWidth: Int, frameHeight: Int, frameFps: Float) {
+    private fun restart(frameWidth: Int, frameHeight: Int, frameFps: Int) {
         stop()
         width = frameWidth
         height = frameHeight
-        fps = frameFps.toInt().coerceIn(5, 30)
+        fps = frameFps.coerceIn(1, 30)
+        bitrate = bitrateFor(width, height, fps)
         colorFormat = selectEncoderColorFormat()
 
-        val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
+        codec = configureEncoder(buildFormat(useCompatibilityTuning = true))
+            ?: configureEncoder(buildFormat(useCompatibilityTuning = false))
+            ?: throw IllegalStateException("Unable to configure H264 encoder")
+        Timber.i("Started H264 encoder ${width}x$height@$fps bitrate=$bitrate colorFormat=$colorFormat")
+    }
+
+    private fun buildFormat(useCompatibilityTuning: Boolean): MediaFormat {
+        return MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height, fps))
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
+
+            if (useCompatibilityTuning) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                )
+                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setInteger(KEY_LOW_LATENCY, 1)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setInteger(KEY_MAX_B_FRAMES, 0)
+                }
+            }
+        }
+    }
+
+    private fun configureEncoder(format: MediaFormat): MediaCodec? {
+        val encoder = try {
+            MediaCodec.createEncoderByType(MIME_TYPE)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to create H264 encoder")
+            return null
         }
 
-        codec = MediaCodec.createEncoderByType(MIME_TYPE).also {
-            it.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            it.start()
+        return try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoder.start()
+            encoder
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to configure H264 encoder with $format")
+            try {
+                encoder.release()
+            } catch (releaseError: Exception) {
+                Timber.e(releaseError, "Unable to release failed H264 encoder")
+            }
+            null
         }
-        Timber.i("Started H264 encoder ${width}x$height@$fps colorFormat=$colorFormat")
     }
 
     private fun drainEncoder(encoder: MediaCodec) {
@@ -116,6 +158,7 @@ class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
                         } else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                             frameCallback(
                                 H264Frame(
+                                    stream = stream,
                                     data = data,
                                     timestampUs = bufferInfo.presentationTimeUs,
                                     isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0,
@@ -226,7 +269,9 @@ class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
     }
 
     private fun bitrateFor(width: Int, height: Int, fps: Int): Int {
-        return (width * height * fps / 8).coerceIn(MIN_BITRATE, MAX_BITRATE)
+        return (width.toLong() * height * fps / 4)
+            .coerceIn(MIN_BITRATE.toLong(), MAX_BITRATE.toLong())
+            .toInt()
     }
 
     private fun selectEncoderColorFormat(): Int {
@@ -256,8 +301,10 @@ class H264StreamEncoder(private val frameCallback: (H264Frame) -> Unit) {
     companion object {
         private const val MIME_TYPE = "video/avc"
         private const val COLOR_QCOM_FORMAT_YUV420_SEMIPLANAR = 0x7FA30C00
-        private const val I_FRAME_INTERVAL_SECONDS = 2
-        private const val MIN_BITRATE = 500_000
-        private const val MAX_BITRATE = 2_500_000
+        private const val I_FRAME_INTERVAL_SECONDS = 1
+        private const val MIN_BITRATE = 350_000
+        private const val MAX_BITRATE = 6_000_000
+        private const val KEY_LOW_LATENCY = "latency"
+        private const val KEY_MAX_B_FRAMES = "max-bframes"
     }
 }

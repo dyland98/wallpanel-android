@@ -14,18 +14,20 @@
  * limitations under the License.
  */
 
-package xyz.wallpanel.app.modules
+package xyz.wallpanel.app
 
-data class H264Frame(
-    val stream: RtspStream,
-    val data: ByteArray,
-    val timestampUs: Long,
-    val isKeyFrame: Boolean,
-    val sps: ByteArray? = null,
-    val pps: ByteArray? = null
-)
+import android.app.admin.DeviceAdminReceiver
+import android.content.Context
+import android.content.Intent
+import timber.log.Timber
 
-enum class RtspStream(val path: String) {
-    SUB("substream"),
-    MAIN("mainstream")
+class WallPanelDeviceAdminReceiver : DeviceAdminReceiver() {
+
+    override fun onEnabled(context: Context, intent: Intent) {
+        Timber.i("WallPanel device admin enabled")
+    }
+
+    override fun onDisabled(context: Context, intent: Intent) {
+        Timber.i("WallPanel device admin disabled")
+    }
 }

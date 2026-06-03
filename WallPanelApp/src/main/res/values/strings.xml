@@ -63,6 +63,10 @@
     <string name="title_setting_http_mjpegmaxstreams">MJPEG Camera Max Streams</string>
     <string name="title_setting_rtsp_enabled">RTSP Camera Streaming</string>
     <string name="title_setting_rtsp_port">RTSP Listening Port</string>
+    <string name="title_setting_rtsp_substream_resolution">Substream Resolution</string>
+    <string name="title_setting_rtsp_substream_fps">Substream FPS</string>
+    <string name="title_setting_rtsp_mainstream_resolution">Mainstream Resolution</string>
+    <string name="title_setting_rtsp_mainstream_fps">Mainstream FPS</string>
     <string name="title_setting_mqtt_enabled">Enabled MQTT Client</string>
     <string name="title_setting_mqtt_servername">MQTT Broker Address</string>
     <string name="title_setting_mqtt_serverport">Broker Port Number</string>
@@ -79,6 +83,18 @@
     <string name="summary_setting_mqtt_discovery_legacy_entities">Use old naming scheme for Home Assistant before 2023.08</string>
     <string name="default_setting_mqtt_home_assistant_name">My Wall Panel</string>
     <string name="title_setting_android_startonboot">Open On Device Boot</string>
+    <string name="title_setting_kiosk_mode">Kiosk Mode</string>
+    <string name="summary_setting_kiosk_mode">Use fullscreen fallback, PIN-protected settings, and block Back from leaving the dashboard. Device Owner adds stronger locking when available.</string>
+    <string name="device_admin_description">Allows WallPanel to run as a kiosk app when configured as Device Owner.</string>
+    <string name="pref_kiosk_setup_title">Kiosk Setup</string>
+    <string name="pref_kiosk_status_title">Kiosk Status</string>
+    <string name="pref_kiosk_status_summary">Shows Device Owner, Device Admin, Home app, and Fully Kiosk status.</string>
+    <string name="pref_kiosk_set_home_title">Set WallPanel as Home App</string>
+    <string name="pref_kiosk_set_home_summary">Open Android home app settings. This fallback returns to WallPanel when Home is pressed.</string>
+    <string name="pref_kiosk_device_admin_title">Device Admin</string>
+    <string name="pref_kiosk_device_admin_summary">Optional. Useful only for Device Owner provisioning or admin policies; not required for fallback kiosk.</string>
+    <string name="pref_kiosk_open_fully_title">Fully / Knox Kiosk</string>
+    <string name="pref_kiosk_open_fully_summary">Open Fully Kiosk if installed. Use Fully/Knox policies for a stronger kiosk without WallPanel as Device Owner.</string>
     <string name="title_setting_android_browsertype">Specify Browser Engine</string>
     <string name="default_setting_android_browsertype">Auto</string>
     <string name="title_setting_test_zoomlevel">Browser Zoom Level</string>
@@ -140,8 +156,9 @@
     <string name="pref_motion_luma_description">Minimum brightness level to detect motion. No motion will be detected if brightness falls below this value (1 – 1000).</string>
     <string name="pref_mjpeg_streaming_description">Use the device camera as a live MJPEG stream. Connect to the stream using the device IP address, HTTP Port, and end point: http://%s:2971/camera/stream</string>
     <string name="pref_mjpeg_streaming_title">MJPEG Streaming</string>
-    <string name="pref_rtsp_streaming_description">Use the device camera as an RTSP H.264 stream. Connect to the stream using the device IP address, RTSP Port, and path: rtsp://%s:8554/camera</string>
+    <string name="pref_rtsp_streaming_description">Use the device camera as RTSP H.264 streams. Substream: rtsp://%1$s:8554/camera/substream. Mainstream: rtsp://%2$s:8554/camera/mainstream.</string>
     <string name="pref_rtsp_streaming_title">RTSP Streaming</string>
+    <string name="pref_rtsp_resolution_summary">Lower values reduce tablet encoding work and Frigate decoding work.</string>
     <string name="pref_http_description">Control the application over HTTP using REST API calls. To find out which commands work with, review the help documentation.</string>
     <string name="pref_launchurl_summary">Enter the fully qualified URL for your home automation dashboard or path to file on the local device (requires storage access permission).</string>
     <string name="pref_show_browser_activity_summary">Display browser loading progress.</string>
@@ -348,6 +365,35 @@
         <item>1</item>
         <item>2</item>
         <item>3</item>
+    </string-array>
+
+    <string-array name="rtsp_resolution_titles">
+        <item>320 x 180</item>
+        <item>426 x 240</item>
+        <item>640 x 360</item>
+        <item>640 x 480</item>
+        <item>854 x 480</item>
+        <item>1280 x 720</item>
+        <item>1920 x 1080</item>
+    </string-array>
+
+    <string-array name="rtsp_substream_resolution_titles">
+        <item>320 x 180</item>
+        <item>426 x 240</item>
+        <item>640 x 360</item>
+        <item>640 x 480</item>
+        <item>854 x 480</item>
+        <item>1280 x 720</item>
+    </string-array>
+
+    <string-array name="rtsp_fps_titles">
+        <item>1 fps</item>
+        <item>2 fps</item>
+        <item>5 fps</item>
+        <item>10 fps</item>
+        <item>15 fps</item>
+        <item>20 fps</item>
+        <item>30 fps</item>
     </string-array>
 
 

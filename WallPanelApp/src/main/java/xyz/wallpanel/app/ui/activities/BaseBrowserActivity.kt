@@ -17,7 +17,10 @@
 package xyz.wallpanel.app.ui.activities
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -27,6 +30,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewTreeObserver
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatDelegate
@@ -34,6 +38,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dagger.android.support.DaggerAppCompatActivity
 import timber.log.Timber
 import xyz.wallpanel.app.AppExceptionHandler
+import xyz.wallpanel.app.WallPanelDeviceAdminReceiver
 import xyz.wallpanel.app.network.MQTTOptions
 import xyz.wallpanel.app.network.WallPanelService
 import xyz.wallpanel.app.network.WallPanelService.Companion.BROADCAST_ALERT_MESSAGE
@@ -71,6 +76,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
     private val inactivityHandler: Handler = Handler(Looper.getMainLooper())
     private var userPresent: Boolean = false
     private var hasWakeScreen = false
+    private var kioskOwnerWarningLogged = false
     var displayProgress = true
     var zoomLevel = 1.0f
 
@@ -217,6 +223,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         filter.addAction(BROADCAST_SERVICE_STARTED)
         val bm = LocalBroadcastManager.getInstance(this)
         bm.registerReceiver(mBroadcastReceiver, filter)
+        applyKioskMode()
         resetInactivityTimer()
     }
 
@@ -248,6 +255,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
             startService(wallPanelService)
         }
         resetScreenBrightness(false)
+        applyKioskMode()
     }
 
     override fun onDestroy() {
@@ -296,19 +304,101 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        val visibility: Int
-        if (hasFocus && configuration.fullScreen) {
-            visibility = (View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        if (hasFocus) {
+            applySystemUiVisibility()
+            applyKioskMode()
+        }
+    }
+
+    private fun applySystemUiVisibility() {
+        val shouldHideBars = configuration.fullScreen || configuration.kioskMode
+        val visibility = if (shouldHideBars) {
+            (View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
-            decorView?.systemUiVisibility = visibility
-        } else if (hasFocus) {
-            visibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_VISIBLE
-            decorView?.systemUiVisibility = visibility
+        } else {
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_VISIBLE
         }
+        decorView?.systemUiVisibility = visibility
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val controller = window.insetsController
+            if (shouldHideBars) {
+                controller?.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            } else {
+                controller?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            }
+        }
+    }
+
+    private fun applyKioskMode() {
+        applySystemUiVisibility()
+        if (!configuration.kioskMode || isInLockTaskMode()) {
+            return
+        }
+
+        if (!isDeviceOwner()) {
+            if (!kioskOwnerWarningLogged) {
+                Timber.i("Using fallback kiosk mode because WallPanel is not Device Owner")
+                kioskOwnerWarningLogged = true
+            }
+            return
+        }
+
+        try {
+            val policyManager = devicePolicyManager()
+            policyManager.setLockTaskPackages(deviceAdminComponent(), arrayOf(packageName))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                policyManager.setStatusBarDisabled(deviceAdminComponent(), true)
+                policyManager.setKeyguardDisabled(deviceAdminComponent(), true)
+            }
+            startLockTask()
+            Timber.i("Kiosk LockTask mode started")
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to start kiosk LockTask mode")
+        }
+    }
+
+    protected fun stopKioskLockTaskForAdmin() {
+        if (!configuration.kioskMode) {
+            return
+        }
+
+        try {
+            if (isInLockTaskMode()) {
+                stopLockTask()
+                Timber.i("Kiosk LockTask mode stopped for admin access")
+            }
+            if (isDeviceOwner() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                devicePolicyManager().setStatusBarDisabled(deviceAdminComponent(), false)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to stop kiosk LockTask mode")
+        }
+    }
+
+    protected fun isKioskModeActive(): Boolean {
+        return configuration.kioskMode && isInLockTaskMode()
+    }
+
+    private fun isInLockTaskMode(): Boolean {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return activityManager.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+    }
+
+    private fun isDeviceOwner(): Boolean {
+        return devicePolicyManager().isDeviceOwnerApp(packageName)
+    }
+
+    private fun devicePolicyManager(): DevicePolicyManager {
+        return getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    }
+
+    private fun deviceAdminComponent(): ComponentName {
+        return ComponentName(this, WallPanelDeviceAdminReceiver::class.java)
     }
 
     internal fun resetScreen() {

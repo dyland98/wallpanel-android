@@ -94,10 +94,40 @@
             android:summary="Show the dashboard screen in fullscreen mode."
             android:key="pref_settings_fullscreen"/>
 
+        <SwitchPreference
+            android:defaultValue="@string/default_setting_kiosk_mode"
+            android:key="@string/key_setting_kiosk_mode"
+            android:summary="@string/summary_setting_kiosk_mode"
+            android:title="@string/title_setting_kiosk_mode" />
+
         <Preference
             android:title="Clear Home Screen"
             android:summary="Removes the app as the default Home screen (Important!! use this is you want to reset your device home app)."
             android:key="button_reset_home_app"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/pref_kiosk_setup_title">
+
+        <Preference
+            android:key="pref_kiosk_status"
+            android:summary="@string/pref_kiosk_status_summary"
+            android:title="@string/pref_kiosk_status_title" />
+
+        <Preference
+            android:key="pref_kiosk_set_home"
+            android:summary="@string/pref_kiosk_set_home_summary"
+            android:title="@string/pref_kiosk_set_home_title" />
+
+        <Preference
+            android:key="pref_kiosk_device_admin"
+            android:summary="@string/pref_kiosk_device_admin_summary"
+            android:title="@string/pref_kiosk_device_admin_title" />
+
+        <Preference
+            android:key="pref_kiosk_open_fully"
+            android:summary="@string/pref_kiosk_open_fully_summary"
+            android:title="@string/pref_kiosk_open_fully_title" />
 
     </PreferenceCategory>
 
@@ -218,4 +248,3 @@
         android:title="@string/pref_about_title"/>
 
 </PreferenceScreen>
-

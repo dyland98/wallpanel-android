@@ -53,6 +53,10 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
         get() = this.sharedPreferences.getBoolean(PREF_FULL_SCREEN, true)
         set(value) = this.sharedPreferences.edit().putBoolean(PREF_FULL_SCREEN, value).apply()
 
+    var kioskMode: Boolean
+        get() = getBoolPref(R.string.key_setting_kiosk_mode, R.string.default_setting_kiosk_mode)
+        set(value) = sharedPreferences.edit().putBoolean(context.getString(R.string.key_setting_kiosk_mode), value).apply()
+
     var useDarkTheme: Boolean
         get() = this.sharedPreferences.getBoolean(PREF_DARK_THEME, false)
         set(value) = this.sharedPreferences.edit().putBoolean(PREF_DARK_THEME, value).apply()
@@ -192,8 +196,40 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
                 context.getString(R.string.default_setting_rtsp_port).toInt()
             }
 
+    val rtspSubstreamResolution: String
+        get() = getStringPref(R.string.key_setting_rtsp_substream_resolution, R.string.default_setting_rtsp_substream_resolution)
+
+    val rtspSubstreamFps: Int
+        get() = getRtspFps(R.string.key_setting_rtsp_substream_fps, R.string.default_setting_rtsp_substream_fps)
+
+    val rtspSubstreamWidth: Int
+        get() = rtspSubstreamResolution.substringBefore("x").toIntOrNull() ?: 640
+
+    val rtspSubstreamHeight: Int
+        get() = rtspSubstreamResolution.substringAfter("x").toIntOrNull() ?: 360
+
+    val rtspMainstreamResolution: String
+        get() = getStringPref(R.string.key_setting_rtsp_mainstream_resolution, R.string.default_setting_rtsp_mainstream_resolution)
+
+    val rtspMainstreamFps: Int
+        get() = getRtspFps(R.string.key_setting_rtsp_mainstream_fps, R.string.default_setting_rtsp_mainstream_fps)
+
+    val rtspMainstreamWidth: Int
+        get() = rtspMainstreamResolution.substringBefore("x").toIntOrNull() ?: 1920
+
+    val rtspMainstreamHeight: Int
+        get() = rtspMainstreamResolution.substringAfter("x").toIntOrNull() ?: 1080
+
     val cameraJpegStreamingEnabled: Boolean
         get() = httpMJPEGEnabled
+
+    private fun getRtspFps(key: Int, default: Int): Int {
+        return try {
+            getStringPref(key, default).trim().toInt().coerceIn(1, 30)
+        } catch (e: NumberFormatException) {
+            context.getString(default).toInt()
+        }
+    }
 
     fun setHttpMJPEGEnabled(value: Boolean?) {
         sharedPreferences.edit().putBoolean(context.getString(R.string.key_setting_http_mjpegenabled), value!!).apply()

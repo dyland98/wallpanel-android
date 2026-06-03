@@ -64,8 +64,16 @@
     <string name="default_setting_http_port">2971</string>
     <string name="default_setting_rtsp_enabled">false</string>
     <string name="default_setting_rtsp_port">8554</string>
+    <string name="default_setting_rtsp_substream_resolution">640x360</string>
+    <string name="default_setting_rtsp_substream_fps">5</string>
+    <string name="default_setting_rtsp_mainstream_resolution">1920x1080</string>
+    <string name="default_setting_rtsp_mainstream_fps">20</string>
     <string name="key_setting_rtsp_enabled">setting_rtsp_enabled</string>
     <string name="key_setting_rtsp_port">setting_rtsp_port</string>
+    <string name="key_setting_rtsp_substream_resolution">setting_rtsp_substream_resolution</string>
+    <string name="key_setting_rtsp_substream_fps">setting_rtsp_substream_fps</string>
+    <string name="key_setting_rtsp_mainstream_resolution">setting_rtsp_mainstream_resolution</string>
+    <string name="key_setting_rtsp_mainstream_fps">setting_rtsp_mainstream_fps</string>
     <string name="key_setting_rtsp_directions">setting_rtsp_directions</string>
     <string name="key_setting_http_mjpegenabled">setting_http_mjpegenabled</string>
     <string name="default_setting_http_restenabled">false</string>
@@ -102,7 +110,9 @@
     <string name="key_setting_app_showactivity">setting_app_showactivity</string>
     <string name="key_setting_use_gecko">setting_use_gecko</string>
     <string name="default_setting_app_preventsleep">false</string>
+    <string name="default_setting_kiosk_mode">false</string>
     <string name="key_setting_app_launchurl">setting_app_launchurl</string>
+    <string name="key_setting_kiosk_mode">setting_kiosk_mode</string>
     <string name="default_setting_app_launchurl">https://wallpanel.xyz</string>
     <string name="default_setting_app_deviceid">mywallpanel</string>
     <string name="key_setting_app_preventsleep">setting_app_preventsleep</string>
@@ -304,6 +314,35 @@
     <string-array name="mqtt_version_values">
         <item>5.0</item>
         <item>3.1.1</item>
+    </string-array>
+
+    <string-array name="rtsp_resolution_values">
+        <item>320x180</item>
+        <item>426x240</item>
+        <item>640x360</item>
+        <item>640x480</item>
+        <item>854x480</item>
+        <item>1280x720</item>
+        <item>1920x1080</item>
+    </string-array>
+
+    <string-array name="rtsp_substream_resolution_values">
+        <item>320x180</item>
+        <item>426x240</item>
+        <item>640x360</item>
+        <item>640x480</item>
+        <item>854x480</item>
+        <item>1280x720</item>
+    </string-array>
+
+    <string-array name="rtsp_fps_values">
+        <item>1</item>
+        <item>2</item>
+        <item>5</item>
+        <item>10</item>
+        <item>15</item>
+        <item>20</item>
+        <item>30</item>
     </string-array>
 
 </resources>

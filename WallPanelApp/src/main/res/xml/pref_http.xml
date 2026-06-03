@@ -93,6 +93,42 @@
             android:title="@string/title_setting_rtsp_port"
             android:dependency="@string/key_setting_rtsp_enabled"/>
 
+        <ListPreference
+            android:defaultValue="@string/default_setting_rtsp_substream_resolution"
+            android:entries="@array/rtsp_substream_resolution_titles"
+            android:entryValues="@array/rtsp_substream_resolution_values"
+            android:key="@string/key_setting_rtsp_substream_resolution"
+            android:summary="@string/pref_rtsp_resolution_summary"
+            android:title="@string/title_setting_rtsp_substream_resolution"
+            android:dependency="@string/key_setting_rtsp_enabled"/>
+
+        <ListPreference
+            android:defaultValue="@string/default_setting_rtsp_substream_fps"
+            android:entries="@array/rtsp_fps_titles"
+            android:entryValues="@array/rtsp_fps_values"
+            android:key="@string/key_setting_rtsp_substream_fps"
+            android:summary="@string/pref_rtsp_resolution_summary"
+            android:title="@string/title_setting_rtsp_substream_fps"
+            android:dependency="@string/key_setting_rtsp_enabled"/>
+
+        <ListPreference
+            android:defaultValue="@string/default_setting_rtsp_mainstream_resolution"
+            android:entries="@array/rtsp_resolution_titles"
+            android:entryValues="@array/rtsp_resolution_values"
+            android:key="@string/key_setting_rtsp_mainstream_resolution"
+            android:summary="@string/pref_rtsp_resolution_summary"
+            android:title="@string/title_setting_rtsp_mainstream_resolution"
+            android:dependency="@string/key_setting_rtsp_enabled"/>
+
+        <ListPreference
+            android:defaultValue="@string/default_setting_rtsp_mainstream_fps"
+            android:entries="@array/rtsp_fps_titles"
+            android:entryValues="@array/rtsp_fps_values"
+            android:key="@string/key_setting_rtsp_mainstream_fps"
+            android:summary="@string/pref_rtsp_resolution_summary"
+            android:title="@string/title_setting_rtsp_mainstream_fps"
+            android:dependency="@string/key_setting_rtsp_enabled"/>
+
     </PreferenceCategory>
 
 </PreferenceScreen>

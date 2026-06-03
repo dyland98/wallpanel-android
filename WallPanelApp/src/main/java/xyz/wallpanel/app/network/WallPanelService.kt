@@ -508,7 +508,9 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
         if (rtspServer == null) {
             Timber.d("startRtsp")
-            rtspServer = RtspH264Server(configuration.rtspPort).also { server ->
+            rtspServer = RtspH264Server(configuration.rtspPort) { activeStreams ->
+                cameraReader?.setActiveRtspStreams(activeStreams)
+            }.also { server ->
                 server.start()
                 val observer = Observer<H264Frame> { frame ->
                     server.submitFrame(frame)
@@ -525,6 +527,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
             cameraReader?.getH264Frame()?.removeObserver(it)
         }
         rtspFrameObserver = null
+        cameraReader?.setActiveRtspStreams(emptySet())
         rtspServer?.stop()
         rtspServer = null
     }

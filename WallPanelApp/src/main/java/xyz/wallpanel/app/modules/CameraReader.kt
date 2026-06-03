@@ -26,11 +26,15 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Handler
 import android.os.Looper
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -61,7 +65,9 @@ class CameraReader @Inject constructor(private val context: Context) {
     private var faceDetector: FaceDetector? = null
     private var barcodeScanner: BarcodeScanner? = null
     private var aggregateLumaMotionDetection: AggregateLumaMotionDetection? = null
-    private var h264StreamEncoder: H264StreamEncoder? = null
+    private var h264SubstreamEncoder: H264StreamEncoder? = null
+    private var h264MainstreamEncoder: H264StreamEncoder? = null
+    private var activeRtspStreams = emptySet<RtspStream>()
     private val byteArray = MutableLiveData<ByteArray>()
     private val h264Frame = MutableLiveData<H264Frame>()
     private var bitmapComplete = true
@@ -72,6 +78,8 @@ class CameraReader @Inject constructor(private val context: Context) {
     private val bitmapCompleteRunnable = Runnable { bitmapComplete = true }
     private val faceDetectionInFlight = AtomicBoolean(false)
     private val barcodeDetectionInFlight = AtomicBoolean(false)
+    private var lastRtspSubstreamFrameMs = 0L
+    private var lastRtspMainstreamFrameMs = 0L
 
     fun getJpeg(): LiveData<ByteArray> {
         return byteArray
@@ -105,12 +113,20 @@ class CameraReader @Inject constructor(private val context: Context) {
         barcodeScanner?.close()
         barcodeScanner = null
 
-        h264StreamEncoder?.stop()
-        h264StreamEncoder = null
+        h264SubstreamEncoder?.stop()
+        h264SubstreamEncoder = null
+
+        h264MainstreamEncoder?.stop()
+        h264MainstreamEncoder = null
+        activeRtspStreams = emptySet()
 
         aggregateLumaMotionDetection = null
         faceDetectionInFlight.set(false)
         barcodeDetectionInFlight.set(false)
+    }
+
+    fun setActiveRtspStreams(streams: Set<RtspStream>) {
+        activeRtspStreams = streams
     }
 
     @SuppressLint("MissingPermission")
@@ -182,6 +198,11 @@ class CameraReader @Inject constructor(private val context: Context) {
 
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .apply {
+                if (configuration.rtspEnabled) {
+                    setResolutionSelector(rtspResolutionSelector(rtspCaptureWidth(configuration), rtspCaptureHeight(configuration)))
+                }
+            }
             .build()
             .also {
                 it.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -224,7 +245,10 @@ class CameraReader @Inject constructor(private val context: Context) {
         }
 
         if (!detectionsOnly && configuration.rtspEnabled) {
-            h264StreamEncoder = H264StreamEncoder { frame ->
+            h264SubstreamEncoder = H264StreamEncoder(RtspStream.SUB) { frame ->
+                setH264Frame(frame)
+            }
+            h264MainstreamEncoder = H264StreamEncoder(RtspStream.MAIN) { frame ->
                 setH264Frame(frame)
             }
         }
@@ -299,11 +323,62 @@ class CameraReader @Inject constructor(private val context: Context) {
         height: Int,
         configuration: Configuration
     ) {
-        val encoder = h264StreamEncoder ?: return
         if (!configuration.rtspEnabled) {
             return
         }
-        encoder.submitNv21(frameBytes, width, height, configuration.cameraFPS, System.nanoTime() / 1000L)
+        handleRtspStream(
+            encoder = h264SubstreamEncoder,
+            stream = RtspStream.SUB,
+            frameBytes = frameBytes,
+            sourceWidth = width,
+            sourceHeight = height,
+            targetWidth = configuration.rtspSubstreamWidth,
+            targetHeight = configuration.rtspSubstreamHeight,
+            fps = configuration.rtspSubstreamFps,
+            lastFrameMs = lastRtspSubstreamFrameMs
+        ) { lastRtspSubstreamFrameMs = it }
+        handleRtspStream(
+            encoder = h264MainstreamEncoder,
+            stream = RtspStream.MAIN,
+            frameBytes = frameBytes,
+            sourceWidth = width,
+            sourceHeight = height,
+            targetWidth = configuration.rtspMainstreamWidth,
+            targetHeight = configuration.rtspMainstreamHeight,
+            fps = configuration.rtspMainstreamFps,
+            lastFrameMs = lastRtspMainstreamFrameMs
+        ) { lastRtspMainstreamFrameMs = it }
+    }
+
+    private fun handleRtspStream(
+        encoder: H264StreamEncoder?,
+        stream: RtspStream,
+        frameBytes: ByteArray,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        targetWidth: Int,
+        targetHeight: Int,
+        fps: Int,
+        lastFrameMs: Long,
+        setLastFrameMs: (Long) -> Unit
+    ) {
+        if (encoder == null || !activeRtspStreams.contains(stream)) {
+            return
+        }
+
+        val nowMs = System.currentTimeMillis()
+        val frameIntervalMs = 1000L / fps.coerceAtLeast(1)
+        if (nowMs - lastFrameMs < frameIntervalMs) {
+            return
+        }
+        setLastFrameMs(nowMs)
+
+        val output = if (sourceWidth == targetWidth && sourceHeight == targetHeight) {
+            frameBytes
+        } else {
+            resizeNv21(frameBytes, sourceWidth, sourceHeight, targetWidth, targetHeight)
+        }
+        encoder.submitNv21(output, targetWidth, targetHeight, fps, System.nanoTime() / 1000L)
     }
 
     private fun handleMotion(frameBytes: ByteArray, width: Int, height: Int, configuration: Configuration) {
@@ -467,6 +542,59 @@ class CameraReader @Inject constructor(private val context: Context) {
         } else {
             CameraSelector.DEFAULT_FRONT_CAMERA
         }
+    }
+
+    private fun rtspResolutionSelector(width: Int, height: Int): ResolutionSelector {
+        val size = Size(width, height)
+        val aspectRatioStrategy = if (isSixteenByNine(size)) {
+            AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+        } else {
+            AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+        }
+        return ResolutionSelector.Builder()
+            .setAspectRatioStrategy(aspectRatioStrategy)
+            .setResolutionStrategy(ResolutionStrategy(size, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+            .build()
+    }
+
+    private fun isSixteenByNine(size: Size): Boolean {
+        return size.width * 9 == size.height * 16
+    }
+
+    private fun rtspCaptureWidth(configuration: Configuration): Int {
+        return maxOf(configuration.rtspSubstreamWidth, configuration.rtspMainstreamWidth)
+    }
+
+    private fun rtspCaptureHeight(configuration: Configuration): Int {
+        return maxOf(configuration.rtspSubstreamHeight, configuration.rtspMainstreamHeight)
+    }
+
+    private fun resizeNv21(source: ByteArray, sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int): ByteArray {
+        val targetYSize = targetWidth * targetHeight
+        val target = ByteArray(targetYSize + targetYSize / 2)
+
+        for (y in 0 until targetHeight) {
+            val sourceY = y * sourceHeight / targetHeight
+            for (x in 0 until targetWidth) {
+                val sourceX = x * sourceWidth / targetWidth
+                target[y * targetWidth + x] = source[sourceY * sourceWidth + sourceX]
+            }
+        }
+
+        val sourceUvOffset = sourceWidth * sourceHeight
+        val targetUvOffset = targetYSize
+        for (y in 0 until targetHeight / 2) {
+            val sourceY = y * sourceHeight / targetHeight
+            for (x in 0 until targetWidth / 2) {
+                val sourceX = x * sourceWidth / targetWidth
+                val sourceIndex = sourceUvOffset + sourceY * sourceWidth + sourceX * 2
+                val targetIndex = targetUvOffset + y * targetWidth + x * 2
+                target[targetIndex] = source[sourceIndex]
+                target[targetIndex + 1] = source[sourceIndex + 1]
+            }
+        }
+
+        return target
     }
 
     private fun scheduleBitmapComplete(cameraFps: Float) {

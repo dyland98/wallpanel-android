@@ -57,6 +57,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     private var playlistHandler: Handler? = null
     private var codeBottomSheet: CodeBottomSheetFragment? = null
     private var webSettings: WebSettings? = null
+    private var kioskAdminPinAccepted = false
     private val calendar: Calendar = Calendar.getInstance()
     private val reconnectionHandler = Handler(Looper.getMainLooper())
     private var connectionLiveData: ConnectionLiveData? = null
@@ -175,11 +176,25 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     }
 
     override fun openSettings() {
+        if (configuration.kioskMode && !kioskAdminPinAccepted && !configuration.isFirstTime) {
+            showCodeBottomSheet()
+            return
+        }
+        stopKioskLockTaskForAdmin()
+        kioskAdminPinAccepted = false
         hideScreenSaver()
         // Stop our service for performance reasons and to pick up changes
         stopService(wallPanelService)
         val intent = SettingsActivity.createStartIntent(this)
         startActivity(intent)
+    }
+
+    override fun onBackPressed() {
+        if (configuration.kioskMode && !configuration.isFirstTime) {
+            onWindowFocusChanged(true)
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun loadWebViewUrl(url: String) {
@@ -381,6 +396,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
             object : CodeBottomSheetFragment.OnAlarmCodeFragmentListener {
                 override fun onComplete(code: String) {
                     codeBottomSheet?.dismiss()
+                    kioskAdminPinAccepted = true
                     openSettings()
                 }
 

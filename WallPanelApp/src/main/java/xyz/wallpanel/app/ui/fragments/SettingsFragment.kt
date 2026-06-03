@@ -16,6 +16,8 @@
 
 package xyz.wallpanel.app.ui.fragments
 
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
@@ -39,6 +41,7 @@ import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.SwitchPreference
 import xyz.wallpanel.app.R
+import xyz.wallpanel.app.WallPanelDeviceAdminReceiver
 import xyz.wallpanel.app.persistence.Configuration.Companion.PREF_SCREENSAVER_DIM_VALUE
 import xyz.wallpanel.app.persistence.Configuration.Companion.PREF_SCREEN_BRIGHTNESS
 import xyz.wallpanel.app.ui.activities.SettingsActivity.Companion.PERMISSIONS_REQUEST_WRITE_SETTINGS
@@ -64,6 +67,7 @@ class SettingsFragment : BaseSettingsFragment() {
     private var hardwareAcceleration: SwitchPreference? = null
     private var preventSleepPreference: SwitchPreference? = null
     private var browserActivityPreference: SwitchPreference? = null
+    private var kioskModePreference: SwitchPreference? = null
     private var ignoreSSLErrorsPreference: SwitchPreference? = null
     private var browserHeaderPreference: EditTextPreference? = null
     private var dashboardPreference: EditTextPreference? = null
@@ -73,6 +77,10 @@ class SettingsFragment : BaseSettingsFragment() {
     private var sensorsPreference: Preference? = null
     private var aboutPreference: Preference? = null
     private var brightnessPreference: Preference? = null
+    private var kioskStatusPreference: Preference? = null
+    private var kioskSetHomePreference: Preference? = null
+    private var kioskDeviceAdminPreference: Preference? = null
+    private var kioskOpenFullyPreference: Preference? = null
     private var browserRefreshPreference: SwitchPreference? = null
 
     private var clockSaverPreference: SwitchPreference? = null
@@ -179,6 +187,11 @@ class SettingsFragment : BaseSettingsFragment() {
         addPreferencesFromResource(R.xml.pref_general)
     }
 
+    override fun onResume() {
+        super.onResume()
+        updateKioskStatus()
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
 
         super.onViewCreated(view, savedInstanceState)
@@ -187,6 +200,7 @@ class SettingsFragment : BaseSettingsFragment() {
         browserHeaderPreference = findPreference<EditTextPreference>(PREF_SETTINGS_USER_AGENT) as EditTextPreference
         preventSleepPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_app_preventsleep)) as SwitchPreference
         browserActivityPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_app_showactivity)) as SwitchPreference
+        kioskModePreference = findPreference<SwitchPreference>(getString(R.string.key_setting_kiosk_mode)) as SwitchPreference
         openOnBootPreference = findPreference<SwitchPreference>(getString(R.string.key_setting_android_startonboot)) as SwitchPreference
         hardwareAcceleration = findPreference<SwitchPreference>(getString(R.string.key_hadware_accelerated_enabled)) as SwitchPreference
         browserRefreshPreference = findPreference<SwitchPreference>(getString(R.string.key_pref_browser_refresh)) as SwitchPreference
@@ -198,6 +212,7 @@ class SettingsFragment : BaseSettingsFragment() {
 
         browserRefreshOnDisconnect.isChecked = configuration.browserRefreshDisconnect
         fullScreenPreference.isChecked = configuration.fullScreen
+        kioskModePreference?.isChecked = configuration.kioskMode
         settingsTransparentPreference.isChecked = configuration.settingsTransparent
         settingsDisablePreference.isChecked = configuration.settingsDisabled
         useDarkThemeSettings.isChecked = configuration.useDarkTheme
@@ -216,6 +231,7 @@ class SettingsFragment : BaseSettingsFragment() {
         // TODO deprecate this
         bindPreferenceSummaryToValue(preventSleepPreference!!)
         bindPreferenceSummaryToValue(browserActivityPreference!!)
+        bindPreferenceSummaryToValue(kioskModePreference!!)
         bindPreferenceSummaryToValue(openOnBootPreference!!)
         bindPreferenceSummaryToValue(hardwareAcceleration!!)
         bindPreferenceSummaryToValue(browserHeaderPreference!!)
@@ -247,6 +263,10 @@ class SettingsFragment : BaseSettingsFragment() {
         sensorsPreference = findPreference("button_key_sensors")
         aboutPreference = findPreference("button_key_about")
         brightnessPreference = findPreference("button_key_brightness")
+        kioskStatusPreference = findPreference(PREF_KIOSK_STATUS)
+        kioskSetHomePreference = findPreference(PREF_KIOSK_SET_HOME)
+        kioskDeviceAdminPreference = findPreference(PREF_KIOSK_DEVICE_ADMIN)
+        kioskOpenFullyPreference = findPreference(PREF_KIOSK_OPEN_FULLY)
 
         rotationPreference = findPreference("pref_settings_image_rotation")
         rotationPreference?.text = configuration.imageRotation.toString()
@@ -294,6 +314,18 @@ class SettingsFragment : BaseSettingsFragment() {
                 resetHomeApp()
                 true
             }
+            kioskSetHomePreference?.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+                openHomeSettings()
+                true
+            }
+            kioskDeviceAdminPreference?.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+                openDeviceAdminSettings()
+                true
+            }
+            kioskOpenFullyPreference?.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+                openFullyKiosk()
+                true
+            }
             aboutPreference?.onPreferenceClickListener = Preference.OnPreferenceClickListener { preference ->
                 view.let { Navigation.findNavController(it).navigate(R.id.about_action) }
                 false
@@ -307,6 +339,7 @@ class SettingsFragment : BaseSettingsFragment() {
         }  catch (e: IllegalArgumentException) {
             Timber.d(e.message)
         }
+        updateKioskStatus()
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?) {
@@ -345,6 +378,13 @@ class SettingsFragment : BaseSettingsFragment() {
             }
             PREF_SETTINGS_FULL_SCREEN -> {
                 configuration.fullScreen = fullScreenPreference.isChecked
+            }
+            getString(R.string.key_setting_kiosk_mode) -> {
+                configuration.kioskMode = kioskModePreference?.isChecked == true
+                if (configuration.kioskMode) {
+                    configuration.fullScreen = true
+                    fullScreenPreference.isChecked = true
+                }
             }
             PREF_SETTINGS_BUTTON_TRANSPARENT -> {
                 configuration.settingsTransparent = settingsTransparentPreference.isChecked
@@ -540,6 +580,85 @@ class SettingsFragment : BaseSettingsFragment() {
         requireActivity().recreate()
     }
 
+    private fun updateKioskStatus() {
+        if (!isAdded) {
+            return
+        }
+
+        val context = requireContext()
+        val policyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(context, WallPanelDeviceAdminReceiver::class.java)
+        val owner = policyManager.isDeviceOwnerApp(context.packageName)
+        val adminActive = policyManager.isAdminActive(admin)
+        val homePackage = currentHomePackage()
+        val wallPanelHome = homePackage == context.packageName
+        val fullyInstalled = isPackageInstalled(FULLY_KIOSK_PACKAGE)
+
+        kioskStatusPreference?.summary = buildString {
+            append(if (configuration.kioskMode) "Fallback kiosk: active" else "Fallback kiosk: inactive")
+            append("\n")
+            append(if (owner) "Device Owner: yes" else "Device Owner: no")
+            append("\n")
+            append(if (adminActive) "Device Admin: active" else "Device Admin: inactive")
+            append("\n")
+            append(if (wallPanelHome) "Home app: WallPanel" else "Home app: ${homePackage ?: "not selected"}")
+            append("\n")
+            append(if (fullyInstalled) "Fully Kiosk: installed" else "Fully Kiosk: not installed")
+        }
+        kioskOpenFullyPreference?.isVisible = fullyInstalled
+    }
+
+    private fun openHomeSettings() {
+        val intent = Intent(Settings.ACTION_HOME_SETTINGS)
+        startActivitySafely(intent, Settings.ACTION_SETTINGS)
+    }
+
+    private fun openDeviceAdminSettings() {
+        val admin = ComponentName(requireContext(), WallPanelDeviceAdminReceiver::class.java)
+        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+            .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin)
+            .putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, getString(R.string.device_admin_description))
+        startActivitySafely(intent, Settings.ACTION_SECURITY_SETTINGS)
+    }
+
+    private fun openFullyKiosk() {
+        val launchIntent = requireContext().packageManager.getLaunchIntentForPackage(FULLY_KIOSK_PACKAGE)
+        if (launchIntent != null) {
+            startActivity(launchIntent)
+            return
+        }
+
+        val detailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$FULLY_KIOSK_PACKAGE"))
+        startActivitySafely(detailsIntent, Settings.ACTION_SETTINGS)
+    }
+
+    private fun currentHomePackage(): String? {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolveInfo = requireContext().packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        return resolveInfo?.activityInfo?.packageName
+    }
+
+    private fun isPackageInstalled(packageName: String): Boolean {
+        if (requireContext().packageManager.getLaunchIntentForPackage(packageName) != null) {
+            return true
+        }
+        return try {
+            requireContext().packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
+    private fun startActivitySafely(intent: Intent, fallbackAction: String) {
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to open kiosk setup activity")
+            startActivity(Intent(fallbackAction))
+        }
+    }
+
     companion object {
         const val PREF_SCREEN_INACTIVITY_TIME = "pref_screensaver_inactivity_time"
         const val PREF_SETTINGS_FULL_SCREEN = "pref_settings_fullscreen"
@@ -553,5 +672,10 @@ class SettingsFragment : BaseSettingsFragment() {
         const val PREF_SETTINGS_SCREENSAVER_DIM = "settings_screensaver_dim"
         const val PREF_SETTINGS_WEB_SCREENSAVER = "settings_screensaver_web"
         const val PREF_SETTINGS_WEB_SCREENSAVER_URL = "settings_screensaver_web_url"
+        private const val PREF_KIOSK_STATUS = "pref_kiosk_status"
+        private const val PREF_KIOSK_SET_HOME = "pref_kiosk_set_home"
+        private const val PREF_KIOSK_DEVICE_ADMIN = "pref_kiosk_device_admin"
+        private const val PREF_KIOSK_OPEN_FULLY = "pref_kiosk_open_fully"
+        private const val FULLY_KIOSK_PACKAGE = "de.ozerov.fully"
     }
 }

@@ -19,6 +19,7 @@ package xyz.wallpanel.app.network
 import android.util.Base64
 import timber.log.Timber
 import xyz.wallpanel.app.modules.H264Frame
+import xyz.wallpanel.app.modules.RtspStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -35,16 +36,19 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
-class RtspH264Server(private val port: Int) {
+class RtspH264Server(
+    private val port: Int,
+    private val activeStreamsChanged: (Set<RtspStream>) -> Unit
+) {
 
     private val running = AtomicBoolean(false)
     private val acceptExecutor = Executors.newSingleThreadExecutor()
     private val clients = CopyOnWriteArrayList<RtspClient>()
     private var serverSocket: ServerSocket? = null
     @Volatile
-    private var sps: ByteArray? = null
+    private var sps = mapOf<RtspStream, ByteArray>()
     @Volatile
-    private var pps: ByteArray? = null
+    private var pps = mapOf<RtspStream, ByteArray>()
 
     fun start() {
         if (!running.compareAndSet(false, true)) {
@@ -77,6 +81,7 @@ class RtspH264Server(private val port: Int) {
 
         clients.forEach { it.close() }
         clients.clear()
+        notifyActiveStreamsChanged()
         try {
             serverSocket?.close()
         } catch (e: Exception) {
@@ -90,8 +95,8 @@ class RtspH264Server(private val port: Int) {
             return
         }
 
-        frame.sps?.let { sps = stripStartCode(it) }
-        frame.pps?.let { pps = stripStartCode(it) }
+        frame.sps?.let { sps = sps + (frame.stream to stripStartCode(it)) }
+        frame.pps?.let { pps = pps + (frame.stream to stripStartCode(it)) }
 
         val nalUnits = splitNalUnits(frame.data)
         if (nalUnits.isEmpty()) {
@@ -99,7 +104,7 @@ class RtspH264Server(private val port: Int) {
         }
 
         clients.forEach { client ->
-            if (client.isPlaying) {
+            if (client.isPlaying && client.selectedStream == frame.stream) {
                 client.sendAccessUnit(frame, nalUnits)
             }
         }
@@ -112,6 +117,9 @@ class RtspH264Server(private val port: Int) {
         private var output: OutputStream? = null
         @Volatile
         var isPlaying: Boolean = false
+            private set
+        @Volatile
+        var selectedStream: RtspStream = RtspStream.SUB
             private set
         private var sequenceNumber = 0
         private val ssrc = sessionId.hashCode()
@@ -163,6 +171,9 @@ class RtspH264Server(private val port: Int) {
 
         private fun handleRequest(requestLine: String, headers: Map<String, String>) {
             val method = requestLine.substringBefore(' ').uppercase(Locale.US)
+            streamFromRequestLine(requestLine)?.let {
+                selectedStream = it
+            }
             val cSeq = headers["cseq"] ?: "1"
             when (method) {
                 "OPTIONS" -> sendResponse(cSeq, extraHeaders = "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n")
@@ -170,9 +181,11 @@ class RtspH264Server(private val port: Int) {
                 "SETUP" -> sendSetup(cSeq, headers["transport"].orEmpty())
                 "PLAY" -> {
                     isPlaying = true
+                    notifyActiveStreamsChanged()
+                    Timber.i("RTSP play ${selectedStream.path} using $transportMode")
                     sendResponse(
                         cSeq,
-                        extraHeaders = "Session: $sessionId\r\nRTP-Info: url=rtsp://0.0.0.0:$port/camera/trackID=0\r\n"
+                        extraHeaders = "Session: $sessionId\r\nRTP-Info: url=rtsp://0.0.0.0:$port/camera/${selectedStream.path}/trackID=0\r\n"
                     )
                 }
                 "TEARDOWN" -> {
@@ -204,8 +217,8 @@ class RtspH264Server(private val port: Int) {
         }
 
         private fun formatParameters(): String {
-            val localSps = sps
-            val localPps = pps
+            val localSps = sps[selectedStream]
+            val localPps = pps[selectedStream]
             return if (localSps != null && localPps != null) {
                 val spsText = Base64.encodeToString(localSps, Base64.NO_WRAP)
                 val ppsText = Base64.encodeToString(localPps, Base64.NO_WRAP)
@@ -218,6 +231,8 @@ class RtspH264Server(private val port: Int) {
         private fun sendSetup(cSeq: String, transport: String) {
             if (transport.contains("RTP/AVP/TCP", ignoreCase = true)) {
                 transportMode = TransportMode.TCP
+                sentParameterSets = false
+                Timber.i("RTSP setup ${selectedStream.path} over TCP")
                 sendResponse(
                     cSeq,
                     extraHeaders = "Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=${ssrcHex()}\r\nSession: $sessionId\r\n"
@@ -231,6 +246,8 @@ class RtspH264Server(private val port: Int) {
                 udpSocket = DatagramSocket()
                 clientRtpPort = clientPort
                 transportMode = TransportMode.UDP
+                sentParameterSets = false
+                Timber.i("RTSP setup ${selectedStream.path} over UDP clientPort=$clientPort")
                 sendResponse(
                     cSeq,
                     extraHeaders = "Transport: RTP/AVP;unicast;client_port=$clientPort-${clientPort + 1};server_port=${udpSocket?.localPort ?: 0}-${(udpSocket?.localPort ?: 0) + 1};ssrc=${ssrcHex()}\r\nSession: $sessionId\r\n"
@@ -258,10 +275,12 @@ class RtspH264Server(private val port: Int) {
         fun sendAccessUnit(frame: H264Frame, nalUnits: List<ByteArray>) {
             try {
                 val timestamp = (frame.timestampUs * 90L / 1000L).toInt()
-                val unitsToSend = buildList {
-                    if ((frame.isKeyFrame || !sentParameterSets) && sps != null && pps != null) {
-                        add(sps!!)
-                        add(pps!!)
+                val unitsToSend = buildList<ByteArray> {
+                    val streamSps = sps[selectedStream]
+                    val streamPps = pps[selectedStream]
+                    if ((frame.isKeyFrame || !sentParameterSets) && streamSps != null && streamPps != null) {
+                        add(streamSps)
+                        add(streamPps)
                         sentParameterSets = true
                     }
                     addAll(nalUnits)
@@ -349,6 +368,7 @@ class RtspH264Server(private val port: Int) {
         fun close() {
             isPlaying = false
             clients.remove(this)
+            notifyActiveStreamsChanged()
             udpSocket?.close()
             udpSocket = null
             try {
@@ -357,6 +377,19 @@ class RtspH264Server(private val port: Int) {
                 Timber.e(e, "Unable to close RTSP H264 client socket")
             }
         }
+    }
+
+    private fun streamFromRequestLine(requestLine: String): RtspStream? {
+        val target = requestLine.split(' ').getOrNull(1).orEmpty().lowercase(Locale.US)
+        return when {
+            target.contains("/mainstream") -> RtspStream.MAIN
+            target.contains("/substream") || target.endsWith("/camera") -> RtspStream.SUB
+            else -> null
+        }
+    }
+
+    private fun notifyActiveStreamsChanged() {
+        activeStreamsChanged(clients.filter { it.isPlaying }.map { it.selectedStream }.toSet())
     }
 
     private fun splitNalUnits(data: ByteArray): List<ByteArray> {
