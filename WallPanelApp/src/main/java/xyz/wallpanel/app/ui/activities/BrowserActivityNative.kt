@@ -41,7 +41,6 @@ import xyz.wallpanel.app.ui.fragments.CodeBottomSheetFragment
 import xyz.wallpanel.app.utils.InternalWebChromeClient
 import xyz.wallpanel.app.ui.views.WebClientCallback
 import xyz.wallpanel.app.utils.InternalWebClient
-import xyz.wallpanel.app.BuildConfig
 import xyz.wallpanel.app.R
 import timber.log.Timber
 import java.net.URISyntaxException
@@ -90,16 +89,6 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     override fun onCreate(savedInstanceState: Bundle?) {
 
         super.onCreate(savedInstanceState)
-
-        if (BuildConfig.DEBUG) {
-            configuration.mqttBroker = BuildConfig.BROKER
-            configuration.mqttUsername = BuildConfig.BROKER_USERNAME
-            configuration.mqttPassword = BuildConfig.BROKER_PASS
-            configuration.appLaunchUrl = BuildConfig.HASS_URL
-            configuration.isFirstTime = false
-            configuration.settingsCode = BuildConfig.CODE.toString()
-            configuration.hasClockScreenSaver = true
-        }
 
         binding = ActivityBrowserBinding.inflate(layoutInflater)
         try {

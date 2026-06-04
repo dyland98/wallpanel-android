@@ -15,7 +15,6 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" /> <!-- Permission to record video -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.CAMERA" /> <!-- Permissions to record audio from web page -->
     <uses-permission android:name="android.permission.MICROPHONE" />
@@ -97,7 +96,7 @@
             android:name="xyz.wallpanel.app.network.WallPanelService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync|camera"
+            android:foregroundServiceType="camera"
             android:stopWithTask="true" />
 
         <receiver

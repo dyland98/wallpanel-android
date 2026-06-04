@@ -37,7 +37,6 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dagger.android.support.DaggerAppCompatActivity
 import timber.log.Timber
-import xyz.wallpanel.app.AppExceptionHandler
 import xyz.wallpanel.app.WallPanelDeviceAdminReceiver
 import xyz.wallpanel.app.network.MQTTOptions
 import xyz.wallpanel.app.network.WallPanelService
@@ -130,9 +129,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
                 resetScreenBrightness(false)
                 clearInactivityTimer()
             } else if (BROADCAST_SCREEN_WAKE_OFF == intent.action && !isFinishing) {
-                hasWakeScreen = false
-                resetInactivityTimer()
-                clearWakeScreenFlags()
+                forceWakeScreenOff()
             } else if (BROADCAST_ACTION_RELOAD_PAGE == intent.action && !isFinishing) {
                 hideScreenSaver()
             } else if (BROADCAST_SERVICE_STARTED == intent.action && !isFinishing) {
@@ -159,7 +156,6 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
         onUserInteraction()
 
-        Thread.setDefaultUncaughtExceptionHandler(AppExceptionHandler(this))
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -205,6 +201,25 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         }
     }
 
+    private fun forceWakeScreenOff() {
+        hasWakeScreen = false
+        clearWakeScreenFlags()
+        clearInactivityTimer()
+        userPresent = false
+        resetScreenBrightness(true)
+        showScreenSaver()
+
+        try {
+            val admin = deviceAdminComponent()
+            val policyManager = devicePolicyManager()
+            if (policyManager.isAdminActive(admin)) {
+                policyManager.lockNow()
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to lock screen after wakeTime")
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         val filter = IntentFilter()
@@ -224,7 +239,11 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         val bm = LocalBroadcastManager.getInstance(this)
         bm.registerReceiver(mBroadcastReceiver, filter)
         applyKioskMode()
-        resetInactivityTimer()
+        if (hasWakeScreen) {
+            clearInactivityTimer()
+        } else {
+            resetInactivityTimer()
+        }
     }
 
     override fun onPause() {
@@ -241,7 +260,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             )
         }
-        if (configuration.appPreventSleep) {
+        if (configuration.appPreventSleep || hasWakeScreen) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             decorView?.keepScreenOn = true
         } else {

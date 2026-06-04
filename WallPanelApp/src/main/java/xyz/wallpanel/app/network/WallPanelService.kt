@@ -151,7 +151,9 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
         AndroidInjection.inject(this)
 
-        startForeground()
+        if (!startForeground()) {
+            return
+        }
 
         // prepare the lock types we may use
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -250,11 +252,17 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
             return state
         }
 
-    private fun startForeground() {
+    private fun startForeground(): Boolean {
         // make a continuously running notification
         val notificationUtils = NotificationUtils(applicationContext, application.resources)
         val notification = notificationUtils.createNotification(getString(R.string.wallpanel_service_notification_title), getString(R.string.wallpanel_service_notification_message))
-        startForeground(ONGOING_NOTIFICATION_ID, notification)
+        try {
+            startForeground(ONGOING_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to start WallPanel foreground service")
+            stopSelf()
+            return false
+        }
 
         // listen for network connectivity changes
         connectionLiveData = ConnectionLiveData(this)
@@ -267,6 +275,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         })
 
         sendServiceStarted()
+        return true
     }
 
     private fun handleNetworkConnect() {
@@ -764,7 +773,11 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.putExtra(EXTRA_TURN_SCREEN_ON, true)
         intent.putExtra(EXTRA_KEEP_AWAKE, keepAwake)
-        startActivity(intent)
+        try {
+            startActivity(intent)
+        } catch (e: SecurityException) {
+            Timber.e(e, "Android blocked bringing the browser activity to front")
+        }
     }
 
     private val clearWakeScreenRunnable = Runnable {

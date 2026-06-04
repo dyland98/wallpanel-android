@@ -86,10 +86,19 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
         set(value) = this.sharedPreferences.edit().putString(PREF_CAMERA_ROTATE, value.toString()).apply()
 
     var appLaunchUrl: String
-        get() = getStringPref(R.string.key_setting_app_launchurl,
-                R.string.default_setting_app_launchurl)
+        get() {
+            val launchUrl = sharedPreferences.getString(context.getString(R.string.key_setting_app_launchurl), "").orEmpty()
+            if (launchUrl.isNotEmpty()) {
+                return launchUrl
+            }
+            val dashboardUrl = sharedPreferences.getString(PREF_SETTINGS_DASHBOARD_URL, "").orEmpty()
+            return dashboardUrl.ifEmpty { context.getString(R.string.default_setting_app_launchurl) }
+        }
         set(launchUrl) {
-            sharedPreferences.edit().putString(context.getString(R.string.key_setting_app_launchurl), launchUrl).apply()
+            sharedPreferences.edit()
+                    .putString(context.getString(R.string.key_setting_app_launchurl), launchUrl)
+                    .putString(PREF_SETTINGS_DASHBOARD_URL, launchUrl)
+                    .apply()
             settingsUpdated()
         }
 
@@ -443,6 +452,7 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
         private const val PREF_SETTINGS_TRANSPARENT = "pref_settings_transparent"
         private const val PREF_SETTINGS_DISABLE = "pref_settings_disable"
         private const val PREF_SETTINGS_LOCATION = "pref_settings_location"
+        private const val PREF_SETTINGS_DASHBOARD_URL = "pref_settings_dashboard_url"
         const val PREF_FIRST_TIME = "pref_first_time"
         const val PREF_WRITE_SCREEN_PERMISSIONS = "pref_write_screen_permissions"
         const val PREF_CAMERA_PERMISSIONS = "pref_camera_permissions"
