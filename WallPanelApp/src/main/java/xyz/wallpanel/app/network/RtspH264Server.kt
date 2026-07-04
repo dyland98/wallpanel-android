@@ -20,6 +20,7 @@ import android.util.Base64
 import timber.log.Timber
 import xyz.wallpanel.app.modules.H264Frame
 import xyz.wallpanel.app.modules.RtspStream
+import java.io.BufferedOutputStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -28,7 +29,6 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -161,7 +161,7 @@ class RtspH264Server(
         private fun run() {
             try {
                 socket.tcpNoDelay = true
-                output = socket.getOutputStream()
+                output = BufferedOutputStream(socket.getOutputStream(), TCP_OUTPUT_BUFFER_SIZE)
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
                 while (!socket.isClosed) {
                     val requestLine = reader.readLine() ?: break
@@ -297,21 +297,18 @@ class RtspH264Server(
             }
         }
 
-        fun sendAccessUnit(frame: H264Frame, nalUnits: List<ByteArray>) {
+        fun sendAccessUnit(frame: H264Frame, nalUnits: List<NalUnit>) {
             try {
                 val timestamp = (frame.timestampUs * 90L / 1000L).toInt()
-                val unitsToSend = buildList<ByteArray> {
-                    val streamSps = sps[selectedStream]
-                    val streamPps = pps[selectedStream]
-                    if ((frame.isKeyFrame || !sentParameterSets) && streamSps != null && streamPps != null) {
-                        add(streamSps)
-                        add(streamPps)
-                        sentParameterSets = true
-                    }
-                    addAll(nalUnits)
+                val streamSps = sps[selectedStream]
+                val streamPps = pps[selectedStream]
+                if ((frame.isKeyFrame || !sentParameterSets) && streamSps != null && streamPps != null) {
+                    sendNalUnit(NalUnit(streamSps, 0, streamSps.size), timestamp, marker = false, flush = false)
+                    sendNalUnit(NalUnit(streamPps, 0, streamPps.size), timestamp, marker = false, flush = false)
+                    sentParameterSets = true
                 }
-                unitsToSend.forEachIndexed { index, nal ->
-                    val isLastUnit = index == unitsToSend.lastIndex
+                nalUnits.forEachIndexed { index, nal ->
+                    val isLastUnit = index == nalUnits.lastIndex
                     sendNalUnit(nal, timestamp, marker = isLastUnit, flush = isLastUnit)
                 }
             } catch (e: Exception) {
@@ -320,36 +317,33 @@ class RtspH264Server(
             }
         }
 
-        private fun sendNalUnit(nalUnit: ByteArray, timestamp: Int, marker: Boolean, flush: Boolean) {
-            val nal = stripStartCode(nalUnit)
-            if (nal.isEmpty()) {
+        private fun sendNalUnit(nal: NalUnit, timestamp: Int, marker: Boolean, flush: Boolean) {
+            if (nal.length <= 0) {
                 return
             }
 
-            if (nal.size <= MAX_RTP_PAYLOAD) {
-                val packet = ByteArray(RTP_HEADER_SIZE + nal.size)
-                writeRtpHeader(packet, timestamp, marker)
-                System.arraycopy(nal, 0, packet, RTP_HEADER_SIZE, nal.size)
-                writePacket(packet, flush)
+            if (nal.length <= MAX_RTP_PAYLOAD) {
+                val header = ByteArray(RTP_HEADER_SIZE)
+                writeRtpHeader(header, timestamp, marker)
+                writePacket(header, nal.data, nal.offset, nal.length, flush)
                 sequenceNumber = (sequenceNumber + 1) and 0xffff
                 return
             }
 
-            val nalHeader = nal[0].toInt() and 0xff
+            val nalHeader = nal.data[nal.offset].toInt() and 0xff
             val fuIndicator = (nalHeader and 0xe0) or 28
             val nalType = nalHeader and 0x1f
             var offset = 1
-            while (offset < nal.size) {
-                val remaining = nal.size - offset
+            while (offset < nal.length) {
+                val remaining = nal.length - offset
                 val chunkSize = min(MAX_RTP_PAYLOAD - FU_A_HEADER_SIZE, remaining)
                 val isStart = offset == 1
-                val isEnd = offset + chunkSize >= nal.size
-                val packet = ByteArray(RTP_HEADER_SIZE + FU_A_HEADER_SIZE + chunkSize)
-                writeRtpHeader(packet, timestamp, marker && isEnd)
-                packet[RTP_HEADER_SIZE] = fuIndicator.toByte()
-                packet[RTP_HEADER_SIZE + 1] = ((if (isStart) 0x80 else 0) or (if (isEnd) 0x40 else 0) or nalType).toByte()
-                System.arraycopy(nal, offset, packet, RTP_HEADER_SIZE + FU_A_HEADER_SIZE, chunkSize)
-                writePacket(packet, flush && isEnd)
+                val isEnd = offset + chunkSize >= nal.length
+                val header = ByteArray(RTP_HEADER_SIZE + FU_A_HEADER_SIZE)
+                writeRtpHeader(header, timestamp, marker && isEnd)
+                header[RTP_HEADER_SIZE] = fuIndicator.toByte()
+                header[RTP_HEADER_SIZE + 1] = ((if (isStart) 0x80 else 0) or (if (isEnd) 0x40 else 0) or nalType).toByte()
+                writePacket(header, nal.data, nal.offset + offset, chunkSize, flush && isEnd)
                 sequenceNumber = (sequenceNumber + 1) and 0xffff
                 offset += chunkSize
             }
@@ -370,19 +364,24 @@ class RtspH264Server(
             packet[11] = ssrc.toByte()
         }
 
-        private fun writePacket(packet: ByteArray, flush: Boolean) {
+        private fun writePacket(header: ByteArray, payload: ByteArray, payloadOffset: Int, payloadLength: Int, flush: Boolean) {
             if (transportMode == TransportMode.UDP) {
                 val datagramSocket = udpSocket ?: return
+                val packet = ByteArray(header.size + payloadLength)
+                System.arraycopy(header, 0, packet, 0, header.size)
+                System.arraycopy(payload, payloadOffset, packet, header.size, payloadLength)
                 datagramSocket.send(DatagramPacket(packet, packet.size, socket.inetAddress, clientRtpPort))
                 return
             }
 
+            val packetSize = header.size + payloadLength
             synchronized(outputLock) {
                 output?.write('$'.code)
                 output?.write(0)
-                output?.write(packet.size shr 8)
-                output?.write(packet.size)
-                output?.write(packet)
+                output?.write(packetSize shr 8)
+                output?.write(packetSize)
+                output?.write(header)
+                output?.write(payload, payloadOffset, payloadLength)
                 if (flush) {
                     output?.flush()
                 }
@@ -420,7 +419,7 @@ class RtspH264Server(
         activeStreamsChanged(clients.filter { it.isPlaying }.map { it.selectedStream }.toSet())
     }
 
-    private fun splitNalUnits(data: ByteArray): List<ByteArray> {
+    private fun splitNalUnits(data: ByteArray): List<NalUnit> {
         val starts = mutableListOf<Pair<Int, Int>>()
         var i = 0
         while (i < data.size - 3) {
@@ -436,23 +435,26 @@ class RtspH264Server(
             return starts.mapIndexed { index, start ->
                 val nalStart = start.first + start.second
                 val nalEnd = starts.getOrNull(index + 1)?.first ?: data.size
-                data.copyOfRange(nalStart, nalEnd)
-            }.filter { it.isNotEmpty() }
+                NalUnit(data, nalStart, nalEnd - nalStart)
+            }.filter { it.length > 0 }
         }
 
         val lengthPrefixed = splitLengthPrefixedNalUnits(data)
-        return lengthPrefixed.ifEmpty { listOf(data) }
+        return lengthPrefixed.ifEmpty { listOf(NalUnit(data, 0, data.size)) }
     }
 
-    private fun splitLengthPrefixedNalUnits(data: ByteArray): List<ByteArray> {
-        val units = mutableListOf<ByteArray>()
+    private fun splitLengthPrefixedNalUnits(data: ByteArray): List<NalUnit> {
+        val units = mutableListOf<NalUnit>()
         var offset = 0
         while (offset + 4 <= data.size) {
-            val length = ByteBuffer.wrap(data, offset, 4).int
+            val length = ((data[offset].toInt() and 0xff) shl 24) or
+                ((data[offset + 1].toInt() and 0xff) shl 16) or
+                ((data[offset + 2].toInt() and 0xff) shl 8) or
+                (data[offset + 3].toInt() and 0xff)
             if (length <= 0 || offset + 4 + length > data.size) {
                 return emptyList()
             }
-            units.add(data.copyOfRange(offset + 4, offset + 4 + length))
+            units.add(NalUnit(data, offset + 4, length))
             offset += 4 + length
         }
         return if (offset == data.size) units else emptyList()
@@ -483,6 +485,7 @@ class RtspH264Server(
         private const val FU_A_HEADER_SIZE = 2
         private const val RTP_PAYLOAD_TYPE_H264 = 96
         private const val MAX_RTP_PAYLOAD = 1200
+        private const val TCP_OUTPUT_BUFFER_SIZE = 64 * 1024
         private val CLIENT_PORT_PATTERN = Regex("""client_port=(\d+)(?:-\d+)?""")
     }
 
@@ -490,4 +493,10 @@ class RtspH264Server(
         TCP,
         UDP
     }
+
+    private data class NalUnit(
+        val data: ByteArray,
+        val offset: Int,
+        val length: Int
+    )
 }

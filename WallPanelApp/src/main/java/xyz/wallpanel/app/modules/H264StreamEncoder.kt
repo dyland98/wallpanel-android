@@ -383,7 +383,7 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
         private const val COLOR_QCOM_FORMAT_YUV420_SEMIPLANAR = 0x7FA30C00
         private const val I_FRAME_INTERVAL_SECONDS = 1
         private const val MIN_BITRATE = 350_000
-        private const val MAX_BITRATE = 6_000_000
+        private const val MAX_BITRATE = 4_000_000
         private const val KEY_LOW_LATENCY = "latency"
         private const val KEY_MAX_B_FRAMES = "max-bframes"
         private const val DEQUEUE_TIMEOUT_US = 10_000L
