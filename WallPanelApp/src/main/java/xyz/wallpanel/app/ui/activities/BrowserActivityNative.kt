@@ -185,13 +185,14 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     }
 
     override fun loadWebViewUrl(url: String) {
-        Timber.d("loadUrl $url")
-        if (url.startsWith("intent:")) {
+        val requestedUrl = url.trim()
+        Timber.d("loadUrl $requestedUrl")
+        if (requestedUrl.startsWith("intent:")) {
             val launchIntent: Intent
             try {
-                launchIntent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                launchIntent = Intent.parseUri(requestedUrl, Intent.URI_INTENT_SCHEME)
             } catch (ex: URISyntaxException) {
-                Timber.e("Bad URI $url: $ex.message")
+                Timber.e("Bad URI $requestedUrl: $ex.message")
                 dialogUtils.showAlertDialog(webView.context, resources.getString(R.string.dialog_message_invalid_intent))
                 return
             }
@@ -203,7 +204,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
             launchIntent.putExtra(Browser.EXTRA_APPLICATION_ID, webView.context.packageName);
             webView.context.startActivity(launchIntent)
         } else {
-            webView.loadUrl(url)
+            webView.loadUrl(requestedUrl)
         }
     }
 
@@ -450,5 +451,4 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
             }
         }
     }
-
 }

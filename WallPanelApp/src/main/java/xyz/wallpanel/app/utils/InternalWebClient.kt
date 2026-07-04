@@ -25,6 +25,7 @@ open class InternalWebClient(val resources: Resources, private val callback: Web
 
     private var pageLoaded = false
     private var currentUrl = ""
+    private var lastCompletedUrl = ""
 
     override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
         if (currentUrl.equals(url, ignoreCase = true)) {
@@ -96,7 +97,11 @@ open class InternalWebClient(val resources: Resources, private val callback: Web
     }
 
     override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-        callback.pageLoadComplete(view.url.toString())
+        val completedUrl = view.url.toString()
+        if (!completedUrl.equals(lastCompletedUrl, ignoreCase = true)) {
+            lastCompletedUrl = completedUrl
+            callback.pageLoadComplete(completedUrl)
+        }
         super.doUpdateVisitedHistory(view, url, isReload)
     }
 
