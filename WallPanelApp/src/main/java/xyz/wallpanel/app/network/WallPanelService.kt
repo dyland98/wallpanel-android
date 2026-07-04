@@ -405,8 +405,10 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         val cameraEnabled = configuration.cameraEnabled
         if (cameraEnabled && cameraReader == null) {
             cameraReader = CameraReader(applicationContext)
+            cameraReader?.setScreenOnProvider { isScreenOn }
             cameraReader?.startCamera(this, cameraDetectorCallback, configuration)
         } else if (cameraEnabled) {
+            cameraReader?.setScreenOnProvider { isScreenOn }
             cameraReader?.startCamera(this, cameraDetectorCallback, configuration)
         }
     }
@@ -521,20 +523,16 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
                 cameraReader?.setActiveRtspStreams(activeStreams)
             }.also { server ->
                 server.start()
-                val observer = Observer<H264Frame> { frame ->
+                cameraReader?.setH264FrameSink { frame ->
                     server.submitFrame(frame)
                 }
-                rtspFrameObserver = observer
-                cameraReader?.getH264Frame()?.observe(this, observer)
             }
         }
     }
 
     private fun stopRtsp() {
         Timber.d("stopRtsp")
-        rtspFrameObserver?.let {
-            cameraReader?.getH264Frame()?.removeObserver(it)
-        }
+        cameraReader?.setH264FrameSink(null)
         rtspFrameObserver = null
         cameraReader?.setActiveRtspStreams(emptySet())
         rtspServer?.stop()
@@ -595,6 +593,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         stopMJPEG()
         stopRtsp()
         stopHttp()
+        cameraReader?.setScreenOnProvider(null)
         cameraReader?.stopCamera()
         publishDiscovery()
         publishApplicationState()
@@ -1154,9 +1153,12 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         }
 
         override fun onFaceDetected() {
-            Timber.i("Face detected")
-            Timber.d("configuration.cameraMotionBright ${configuration.cameraMotionBright}")
-            if (configuration.cameraFaceWake) {
+            val isNewFaceDetection = !faceDetected
+            if (isNewFaceDetection) {
+                Timber.i("Face detected")
+                Timber.d("configuration.cameraMotionBright ${configuration.cameraMotionBright}")
+            }
+            if (configuration.cameraFaceWake && isNewFaceDetection) {
                 configurePowerOptions()
                 wakeScreen() // temp turn on screen
             }

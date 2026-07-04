@@ -328,7 +328,7 @@ constructor(private val context: Context, private val sharedPreferences: SharedP
         }
 
     var browserRefresh: Boolean
-        get() = this.sharedPreferences.getBoolean(context.getString(R.string.key_pref_browser_refresh), true)
+        get() = getBoolPref(R.string.key_pref_browser_refresh, R.string.default_browser_refresh)
         set(value) {
             sharedPreferences.edit().putBoolean(context.getString(R.string.key_pref_browser_refresh), value).apply()
         }

@@ -124,10 +124,8 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
         }
 
         if (configuration.hardwareAccelerated) {
-            // chromium, enable hardware acceleration
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         } else {
-            // older android version, disable hardware acceleration
             webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         }
 
@@ -235,7 +233,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
         webSettings?.databaseEnabled = true
         webSettings?.saveFormData = true
         webSettings?.javaScriptCanOpenWindowsAutomatically = true
-        webSettings?.cacheMode = WebSettings.LOAD_NO_CACHE
+        webSettings?.cacheMode = WebSettings.LOAD_DEFAULT
         webSettings?.allowFileAccess = true
         webSettings?.allowFileAccessFromFileURLs = true
         webSettings?.allowContentAccess = true
@@ -326,7 +324,6 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     @SuppressLint("ClickableViewAccessibility")
     private fun configureWebView(view: ViewGroup) {
         webView = binding.activityBrowserWebviewNative
-        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         // Force links and redirects to open in the WebView instead of in a browser
         configureWebChromeClient()
         configureWebViewClient()

@@ -21,12 +21,16 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
+import android.view.Surface
 import timber.log.Timber
 import java.nio.ByteBuffer
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class H264StreamEncoder(private val stream: RtspStream, private val frameCallback: (H264Frame) -> Unit) {
 
     private var codec: MediaCodec? = null
+    private var inputSurface: Surface? = null
     private var width = 0
     private var height = 0
     private var fps = 15
@@ -35,9 +39,11 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private val bufferInfo = MediaCodec.BufferInfo()
+    private val drainExecutor = Executors.newSingleThreadExecutor()
+    private val surfaceDraining = AtomicBoolean(false)
 
     fun submitNv21(frame: ByteArray, frameWidth: Int, frameHeight: Int, frameFps: Int, timestampUs: Long) {
-        if (codec == null || width != frameWidth || height != frameHeight) {
+        if (inputSurface != null || codec == null || width != frameWidth || height != frameHeight) {
             restart(frameWidth, frameHeight, frameFps)
         }
 
@@ -57,7 +63,21 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
         }
     }
 
+    fun startSurface(frameWidth: Int, frameHeight: Int, frameFps: Int): Surface {
+        if (codec == null || inputSurface == null || width != frameWidth || height != frameHeight || fps != frameFps.coerceIn(1, 30)) {
+            restartSurface(frameWidth, frameHeight, frameFps)
+        }
+        return inputSurface ?: throw IllegalStateException("H264 surface encoder was not started")
+    }
+
     fun stop() {
+        surfaceDraining.set(false)
+        try {
+            inputSurface?.release()
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to release H264 input surface")
+        }
+        inputSurface = null
         try {
             codec?.stop()
         } catch (e: Exception) {
@@ -87,6 +107,21 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
             ?: configureEncoder(buildFormat(useCompatibilityTuning = false))
             ?: throw IllegalStateException("Unable to configure H264 encoder")
         Timber.i("Started H264 encoder ${width}x$height@$fps bitrate=$bitrate colorFormat=$colorFormat")
+    }
+
+    private fun restartSurface(frameWidth: Int, frameHeight: Int, frameFps: Int) {
+        stop()
+        width = frameWidth
+        height = frameHeight
+        fps = frameFps.coerceIn(1, 30)
+        bitrate = bitrateFor(width, height, fps)
+        colorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+
+        codec = configureSurfaceEncoder(buildFormat(useCompatibilityTuning = true))
+            ?: configureSurfaceEncoder(buildFormat(useCompatibilityTuning = false))
+            ?: throw IllegalStateException("Unable to configure surface H264 encoder")
+        startSurfaceDrainLoop(codec!!)
+        Timber.i("Started surface H264 encoder ${width}x$height@$fps bitrate=$bitrate")
     }
 
     private fun buildFormat(useCompatibilityTuning: Boolean): MediaFormat {
@@ -136,9 +171,54 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
         }
     }
 
+    private fun configureSurfaceEncoder(format: MediaFormat): MediaCodec? {
+        val encoder = try {
+            MediaCodec.createEncoderByType(MIME_TYPE)
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to create surface H264 encoder")
+            return null
+        }
+
+        return try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = encoder.createInputSurface()
+            encoder.start()
+            encoder
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to configure surface H264 encoder with $format")
+            try {
+                encoder.release()
+            } catch (releaseError: Exception) {
+                Timber.e(releaseError, "Unable to release failed surface H264 encoder")
+            }
+            inputSurface = null
+            null
+        }
+    }
+
+    private fun startSurfaceDrainLoop(encoder: MediaCodec) {
+        surfaceDraining.set(true)
+        drainExecutor.execute {
+            while (surfaceDraining.get() && codec === encoder) {
+                try {
+                    drainEncoder(encoder, DEQUEUE_TIMEOUT_US)
+                } catch (e: Exception) {
+                    if (surfaceDraining.get()) {
+                        Timber.e(e, "Unable to drain surface H264 encoder")
+                        stop()
+                    }
+                }
+            }
+        }
+    }
+
     private fun drainEncoder(encoder: MediaCodec) {
+        drainEncoder(encoder, 0)
+    }
+
+    private fun drainEncoder(encoder: MediaCodec, timeoutUs: Long) {
         while (true) {
-            val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 0)
+            val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
             when {
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -306,5 +386,6 @@ class H264StreamEncoder(private val stream: RtspStream, private val frameCallbac
         private const val MAX_BITRATE = 6_000_000
         private const val KEY_LOW_LATENCY = "latency"
         private const val KEY_MAX_B_FRAMES = "max-bframes"
+        private const val DEQUEUE_TIMEOUT_US = 10_000L
     }
 }

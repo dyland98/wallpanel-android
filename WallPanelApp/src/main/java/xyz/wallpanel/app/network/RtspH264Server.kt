@@ -33,6 +33,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -43,6 +44,8 @@ class RtspH264Server(
 
     private val running = AtomicBoolean(false)
     private val acceptExecutor = Executors.newSingleThreadExecutor()
+    private val frameExecutor = Executors.newSingleThreadExecutor()
+    private val frameDispatching = AtomicBoolean(false)
     private val clients = CopyOnWriteArrayList<RtspClient>()
     private var serverSocket: ServerSocket? = null
     @Volatile
@@ -88,9 +91,31 @@ class RtspH264Server(
             Timber.e(e, "Unable to close RTSP H264 server socket")
         }
         serverSocket = null
+        frameExecutor.shutdownNow()
+        acceptExecutor.shutdownNow()
     }
 
     fun submitFrame(frame: H264Frame) {
+        if (!running.get()) {
+            return
+        }
+        if (!frameDispatching.compareAndSet(false, true)) {
+            return
+        }
+        try {
+            frameExecutor.execute {
+                try {
+                    dispatchFrame(frame)
+                } finally {
+                    frameDispatching.set(false)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            frameDispatching.set(false)
+        }
+    }
+
+    private fun dispatchFrame(frame: H264Frame) {
         if (!running.get()) {
             return
         }
@@ -286,7 +311,8 @@ class RtspH264Server(
                     addAll(nalUnits)
                 }
                 unitsToSend.forEachIndexed { index, nal ->
-                    sendNalUnit(nal, timestamp, marker = index == unitsToSend.lastIndex)
+                    val isLastUnit = index == unitsToSend.lastIndex
+                    sendNalUnit(nal, timestamp, marker = isLastUnit, flush = isLastUnit)
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Unable to send RTSP H264 frame")
@@ -294,7 +320,7 @@ class RtspH264Server(
             }
         }
 
-        private fun sendNalUnit(nalUnit: ByteArray, timestamp: Int, marker: Boolean) {
+        private fun sendNalUnit(nalUnit: ByteArray, timestamp: Int, marker: Boolean, flush: Boolean) {
             val nal = stripStartCode(nalUnit)
             if (nal.isEmpty()) {
                 return
@@ -304,7 +330,7 @@ class RtspH264Server(
                 val packet = ByteArray(RTP_HEADER_SIZE + nal.size)
                 writeRtpHeader(packet, timestamp, marker)
                 System.arraycopy(nal, 0, packet, RTP_HEADER_SIZE, nal.size)
-                writePacket(packet)
+                writePacket(packet, flush)
                 sequenceNumber = (sequenceNumber + 1) and 0xffff
                 return
             }
@@ -323,7 +349,7 @@ class RtspH264Server(
                 packet[RTP_HEADER_SIZE] = fuIndicator.toByte()
                 packet[RTP_HEADER_SIZE + 1] = ((if (isStart) 0x80 else 0) or (if (isEnd) 0x40 else 0) or nalType).toByte()
                 System.arraycopy(nal, offset, packet, RTP_HEADER_SIZE + FU_A_HEADER_SIZE, chunkSize)
-                writePacket(packet)
+                writePacket(packet, flush && isEnd)
                 sequenceNumber = (sequenceNumber + 1) and 0xffff
                 offset += chunkSize
             }
@@ -344,7 +370,7 @@ class RtspH264Server(
             packet[11] = ssrc.toByte()
         }
 
-        private fun writePacket(packet: ByteArray) {
+        private fun writePacket(packet: ByteArray, flush: Boolean) {
             if (transportMode == TransportMode.UDP) {
                 val datagramSocket = udpSocket ?: return
                 datagramSocket.send(DatagramPacket(packet, packet.size, socket.inetAddress, clientRtpPort))
@@ -357,7 +383,9 @@ class RtspH264Server(
                 output?.write(packet.size shr 8)
                 output?.write(packet.size)
                 output?.write(packet)
-                output?.flush()
+                if (flush) {
+                    output?.flush()
+                }
             }
         }
 

@@ -144,7 +144,7 @@
     <string name="key_setting_battery">setting_battery</string>
 
     <string name="key_pref_browser_refresh">browser_refresh</string>
-    <string name="default_browser_refresh">true</string>
+    <string name="default_browser_refresh">false</string>
 
     <string name="key_screensaver_inactivity_time">screensaver_inactivity_time</string>
 

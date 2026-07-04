@@ -31,6 +31,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -67,6 +68,7 @@ class CameraReader @Inject constructor(private val context: Context) {
     private var aggregateLumaMotionDetection: AggregateLumaMotionDetection? = null
     private var h264SubstreamEncoder: H264StreamEncoder? = null
     private var h264MainstreamEncoder: H264StreamEncoder? = null
+    private var h264FrameSink: ((H264Frame) -> Unit)? = null
     private var activeRtspStreams = emptySet<RtspStream>()
     private val byteArray = MutableLiveData<ByteArray>()
     private val h264Frame = MutableLiveData<H264Frame>()
@@ -80,6 +82,13 @@ class CameraReader @Inject constructor(private val context: Context) {
     private val barcodeDetectionInFlight = AtomicBoolean(false)
     private var lastRtspSubstreamFrameMs = 0L
     private var lastRtspMainstreamFrameMs = 0L
+    private var lastFaceDetectionMs = 0L
+    private var currentLifecycleOwner: LifecycleOwner? = null
+    private var currentConfiguration: Configuration? = null
+    private var currentPreviewView: PreviewView? = null
+    private var screenOnProvider: (() -> Boolean)? = null
+
+    private data class FaceDetectionFrame(val bytes: ByteArray, val width: Int, val height: Int)
 
     fun getJpeg(): LiveData<ByteArray> {
         return byteArray
@@ -89,12 +98,25 @@ class CameraReader @Inject constructor(private val context: Context) {
         return h264Frame
     }
 
+    fun setH264FrameSink(sink: ((H264Frame) -> Unit)?) {
+        h264FrameSink = sink
+    }
+
+    fun setScreenOnProvider(provider: (() -> Boolean)?) {
+        screenOnProvider = provider
+    }
+
     private fun setJpeg(value: ByteArray) {
         byteArray.value = value
     }
 
     private fun setH264Frame(value: H264Frame) {
-        h264Frame.postValue(value)
+        val sink = h264FrameSink
+        if (sink != null) {
+            sink(value)
+        } else {
+            h264Frame.postValue(value)
+        }
     }
 
     fun stopCamera() {
@@ -119,14 +141,23 @@ class CameraReader @Inject constructor(private val context: Context) {
         h264MainstreamEncoder?.stop()
         h264MainstreamEncoder = null
         activeRtspStreams = emptySet()
+        currentLifecycleOwner = null
+        currentConfiguration = null
+        currentPreviewView = null
 
         aggregateLumaMotionDetection = null
         faceDetectionInFlight.set(false)
         barcodeDetectionInFlight.set(false)
+        lastFaceDetectionMs = 0L
     }
 
     fun setActiveRtspStreams(streams: Set<RtspStream>) {
+        val wasUsingSurfaceMainstream = useSurfaceMainstream(currentConfiguration, currentPreviewView)
         activeRtspStreams = streams
+        val shouldUseSurfaceMainstream = useSurfaceMainstream(currentConfiguration, currentPreviewView)
+        if (wasUsingSurfaceMainstream != shouldUseSurfaceMainstream) {
+            rebindCurrentCamera()
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -172,6 +203,9 @@ class CameraReader @Inject constructor(private val context: Context) {
     ) {
         stopCamera()
         cameraCallback = callback
+        currentLifecycleOwner = lifecycleOwner
+        currentConfiguration = configuration
+        currentPreviewView = previewView
         buildAnalyzers(configuration, detectionsOnly)
 
         val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -200,7 +234,12 @@ class CameraReader @Inject constructor(private val context: Context) {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .apply {
                 if (configuration.rtspEnabled) {
-                    setResolutionSelector(rtspResolutionSelector(rtspCaptureWidth(configuration), rtspCaptureHeight(configuration)))
+                    setResolutionSelector(
+                        rtspResolutionSelector(
+                            analysisCaptureWidth(configuration, previewView),
+                            analysisCaptureHeight(configuration, previewView)
+                        )
+                    )
                 }
             }
             .build()
@@ -215,28 +254,72 @@ class CameraReader @Inject constructor(private val context: Context) {
                 cameraPreview.setSurfaceProvider(it.surfaceProvider)
             }
         }
+        val rtspMainstreamPreview = buildRtspMainstreamPreview(configuration, previewView)
+        val useCases = mutableListOf<UseCase>().apply {
+            preview?.let { add(it) }
+            rtspMainstreamPreview?.let { add(it) }
+            add(analysis)
+        }
 
         val requestedSelector = cameraSelectorFor(configuration.cameraId)
         val fallbackSelector = fallbackCameraSelectorFor(configuration.cameraId)
         try {
-            if (preview != null) {
-                provider.bindToLifecycle(lifecycleOwner, requestedSelector, preview, analysis)
-            } else {
-                provider.bindToLifecycle(lifecycleOwner, requestedSelector, analysis)
-            }
+            provider.bindToLifecycle(lifecycleOwner, requestedSelector, *useCases.toTypedArray())
         } catch (e: Exception) {
             Timber.e(e, "Unable to bind requested camera, trying fallback")
             try {
-                if (preview != null) {
-                    provider.bindToLifecycle(lifecycleOwner, fallbackSelector, preview, analysis)
-                } else {
-                    provider.bindToLifecycle(lifecycleOwner, fallbackSelector, analysis)
-                }
+                provider.bindToLifecycle(lifecycleOwner, fallbackSelector, *useCases.toTypedArray())
             } catch (fallbackError: Exception) {
                 Timber.e(fallbackError, "Unable to bind fallback camera")
                 cameraCallback?.onCameraError()
             }
         }
+    }
+
+    private fun buildRtspMainstreamPreview(configuration: Configuration, previewView: PreviewView?): Preview? {
+        if (!useSurfaceMainstream(configuration, previewView)) {
+            h264MainstreamEncoder?.stop()
+            return null
+        }
+
+        val width = configuration.rtspMainstreamWidth
+        val height = configuration.rtspMainstreamHeight
+        val fps = configuration.rtspMainstreamFps
+        return Preview.Builder()
+            .setResolutionSelector(rtspResolutionSelector(width, height))
+            .build()
+            .also { cameraPreview ->
+                cameraPreview.setSurfaceProvider(cameraExecutor) { request ->
+                    try {
+                        val surface = h264MainstreamEncoder?.startSurface(width, height, fps)
+                        if (surface == null) {
+                            request.willNotProvideSurface()
+                        } else {
+                            request.provideSurface(surface, cameraExecutor) {
+                                h264MainstreamEncoder?.stop()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "Unable to provide RTSP mainstream encoder surface")
+                        request.willNotProvideSurface()
+                    }
+                }
+            }
+    }
+
+    private fun rebindCurrentCamera() {
+        mainHandler.post {
+            val provider = cameraProvider ?: return@post
+            val lifecycleOwner = currentLifecycleOwner ?: return@post
+            val configuration = currentConfiguration ?: return@post
+            bindCamera(provider, lifecycleOwner, configuration, currentPreviewView)
+        }
+    }
+
+    private fun useSurfaceMainstream(configuration: Configuration?, previewView: PreviewView?): Boolean {
+        return configuration?.rtspEnabled == true &&
+            previewView == null &&
+            activeRtspStreams.contains(RtspStream.MAIN)
     }
 
     private fun buildAnalyzers(configuration: Configuration, detectionsOnly: Boolean) {
@@ -280,6 +363,13 @@ class CameraReader @Inject constructor(private val context: Context) {
         val width = imageProxy.width
         val height = imageProxy.height
         val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+        val nowMs = System.currentTimeMillis()
+
+        if (!shouldReadFrame(configuration, nowMs)) {
+            imageProxy.close()
+            return
+        }
+
         val nv21 = try {
             imageProxy.toNv21()
         } catch (e: Exception) {
@@ -294,6 +384,45 @@ class CameraReader @Inject constructor(private val context: Context) {
         handleMotion(nv21, width, height, configuration)
         handleFaceDetection(nv21, width, height, rotationDegrees, configuration)
         handleBarcodeDetection(nv21, width, height, rotationDegrees, configuration)
+    }
+
+    private fun shouldReadFrame(configuration: Configuration, nowMs: Long): Boolean {
+        return shouldReadMjpegFrame(configuration)
+            || shouldReadRtspFrame(configuration, nowMs)
+            || configuration.cameraMotionEnabled
+            || shouldReadFaceDetectionFrame(configuration, nowMs)
+            || shouldReadBarcodeFrame(configuration)
+    }
+
+    private fun shouldReadMjpegFrame(configuration: Configuration): Boolean {
+        return configuration.httpMJPEGEnabled && bitmapComplete
+    }
+
+    private fun shouldReadRtspFrame(configuration: Configuration, nowMs: Long): Boolean {
+        if (!configuration.rtspEnabled) {
+            return false
+        }
+        val mainNeedsNv21 = !useSurfaceMainstream(configuration, currentPreviewView)
+        return isRtspStreamDue(RtspStream.SUB, configuration.rtspSubstreamFps, lastRtspSubstreamFrameMs, nowMs)
+            || (mainNeedsNv21 && isRtspStreamDue(RtspStream.MAIN, configuration.rtspMainstreamFps, lastRtspMainstreamFrameMs, nowMs))
+    }
+
+    private fun isRtspStreamDue(stream: RtspStream, fps: Int, lastFrameMs: Long, nowMs: Long): Boolean {
+        if (!activeRtspStreams.contains(stream)) {
+            return false
+        }
+        val frameIntervalMs = 1000L / fps.coerceAtLeast(1)
+        return nowMs - lastFrameMs >= frameIntervalMs
+    }
+
+    private fun shouldReadFaceDetectionFrame(configuration: Configuration, nowMs: Long): Boolean {
+        return configuration.cameraFaceEnabled
+            && !faceDetectionInFlight.get()
+            && nowMs - lastFaceDetectionMs >= faceDetectionIntervalMs()
+    }
+
+    private fun shouldReadBarcodeFrame(configuration: Configuration): Boolean {
+        return configuration.cameraQRCodeEnabled && !barcodeDetectionInFlight.get()
     }
 
     private fun handleMjpegStreaming(
@@ -335,6 +464,7 @@ class CameraReader @Inject constructor(private val context: Context) {
             targetWidth = configuration.rtspSubstreamWidth,
             targetHeight = configuration.rtspSubstreamHeight,
             fps = configuration.rtspSubstreamFps,
+            configuration = configuration,
             lastFrameMs = lastRtspSubstreamFrameMs
         ) { lastRtspSubstreamFrameMs = it }
         handleRtspStream(
@@ -346,6 +476,7 @@ class CameraReader @Inject constructor(private val context: Context) {
             targetWidth = configuration.rtspMainstreamWidth,
             targetHeight = configuration.rtspMainstreamHeight,
             fps = configuration.rtspMainstreamFps,
+            configuration = configuration,
             lastFrameMs = lastRtspMainstreamFrameMs
         ) { lastRtspMainstreamFrameMs = it }
     }
@@ -359,10 +490,14 @@ class CameraReader @Inject constructor(private val context: Context) {
         targetWidth: Int,
         targetHeight: Int,
         fps: Int,
+        configuration: Configuration,
         lastFrameMs: Long,
         setLastFrameMs: (Long) -> Unit
     ) {
         if (encoder == null || !activeRtspStreams.contains(stream)) {
+            return
+        }
+        if (stream == RtspStream.MAIN && useSurfaceMainstream(configuration, currentPreviewView)) {
             return
         }
 
@@ -415,21 +550,33 @@ class CameraReader @Inject constructor(private val context: Context) {
         configuration: Configuration
     ) {
         val detector = faceDetector ?: return
-        if (!configuration.cameraFaceEnabled || !faceDetectionInFlight.compareAndSet(false, true)) {
+        if (!configuration.cameraFaceEnabled) {
             return
         }
 
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastFaceDetectionMs < faceDetectionIntervalMs()) {
+            return
+        }
+
+        if (!faceDetectionInFlight.compareAndSet(false, true)) {
+            return
+        }
+        lastFaceDetectionMs = nowMs
+
+        val faceFrame = resizedFaceDetectionFrame(frameBytes, width, height)
         val image = InputImage.fromByteArray(
-            frameBytes,
-            width,
-            height,
+            faceFrame.bytes,
+            faceFrame.width,
+            faceFrame.height,
             rotationDegrees,
             InputImage.IMAGE_FORMAT_NV21
         )
         detector.process(image)
             .addOnSuccessListener { faces ->
                 val matchingFace = faces.firstOrNull { face ->
-                    val faceSize = face.boundingBox.width().toFloat() / width * 100 > configuration.cameraFaceSize
+                    val requiredFaceSize = (configuration.cameraFaceSize * 0.6f).coerceAtLeast(8f)
+                    val faceSize = face.boundingBox.width().toFloat() / faceFrame.width * 100 > requiredFaceSize
                     val faceRotation = if (configuration.cameraFaceRotation) {
                         face.headEulerAngleY > -12 && face.headEulerAngleY < 12
                     } else {
@@ -449,6 +596,28 @@ class CameraReader @Inject constructor(private val context: Context) {
             .addOnCompleteListener {
                 faceDetectionInFlight.set(false)
             }
+    }
+
+    private fun resizedFaceDetectionFrame(frameBytes: ByteArray, width: Int, height: Int): FaceDetectionFrame {
+        if (width <= FACE_DETECTION_MAX_WIDTH) {
+            return FaceDetectionFrame(frameBytes, width, height)
+        }
+
+        val targetWidth = FACE_DETECTION_MAX_WIDTH
+        val targetHeight = (targetWidth * height / width).coerceAtLeast(2).let { it - (it % 2) }
+        return FaceDetectionFrame(
+            resizeNv21(frameBytes, width, height, targetWidth, targetHeight),
+            targetWidth,
+            targetHeight
+        )
+    }
+
+    private fun faceDetectionIntervalMs(): Long {
+        return if (screenOnProvider?.invoke() == true) {
+            FACE_DETECTION_SCREEN_ON_INTERVAL_MS
+        } else {
+            FACE_DETECTION_SCREEN_OFF_INTERVAL_MS
+        }
     }
 
     private fun handleBarcodeDetection(
@@ -569,6 +738,22 @@ class CameraReader @Inject constructor(private val context: Context) {
         return maxOf(configuration.rtspSubstreamHeight, configuration.rtspMainstreamHeight)
     }
 
+    private fun analysisCaptureWidth(configuration: Configuration, previewView: PreviewView?): Int {
+        if (configuration.httpMJPEGEnabled || !useSurfaceMainstream(configuration, previewView)) {
+            return rtspCaptureWidth(configuration)
+        }
+        return maxOf(configuration.rtspSubstreamWidth, FACE_DETECTION_MAX_WIDTH)
+    }
+
+    private fun analysisCaptureHeight(configuration: Configuration, previewView: PreviewView?): Int {
+        if (configuration.httpMJPEGEnabled || !useSurfaceMainstream(configuration, previewView)) {
+            return rtspCaptureHeight(configuration)
+        }
+        val width = analysisCaptureWidth(configuration, previewView)
+        val height = width * configuration.rtspSubstreamHeight / configuration.rtspSubstreamWidth.coerceAtLeast(1)
+        return height.coerceAtLeast(2).let { it - (it % 2) }
+    }
+
     private fun resizeNv21(source: ByteArray, sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int): ByteArray {
         val targetYSize = targetWidth * targetHeight
         val target = ByteArray(targetYSize + targetYSize / 2)
@@ -648,5 +833,8 @@ class CameraReader @Inject constructor(private val context: Context) {
         const val DELAY_15_FPS = (100 * 3).toLong() // 300 milliseconds
         const val DELAY_10_FPS = (100 * 4).toLong() // 400 milliseconds
         const val DELAY_5_FPS = (100 * 5).toLong() // 500 milliseconds
+        const val FACE_DETECTION_SCREEN_OFF_INTERVAL_MS = 500L
+        const val FACE_DETECTION_SCREEN_ON_INTERVAL_MS = 30_000L
+        const val FACE_DETECTION_MAX_WIDTH = 1280
     }
 }
