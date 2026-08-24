@@ -8,7 +8,7 @@ If MQTT is enabled in the settings and properly configured, the application can 
 
 Sensor | Keys | Example | Notes
 -|-|-|-
-battery | unit, value, charging, acPlugged, usbPlugged | ```{"unit":"%", "value":"39", "acPlugged":false, "usbPlugged":true, "charging":true}``` |
+battery | unit, value, charging, acPlugged, usbPlugged, wirelessPlugged, plugged, status, health, scale, level, present, temperature, temperatureUnit, voltage, voltageMv, technology | ```{"unit":"%", "value":39, "acPlugged":false, "usbPlugged":true, "wirelessPlugged":false, "charging":true, "plugged":"usb", "status":"charging", "health":"good", "scale":100, "level":39, "present":true, "temperature":26.4, "temperatureUnit":"°C", "voltage":4.1, "voltageMv":4100, "technology":"Li-ion"}``` | Some optional battery fields may be absent if Android does not report them.
 light | unit, value | ```{"unit":"lx", "value":"920"}``` |
 magneticField | unit, value | ```{"unit":"uT", "value":"-1780.699951171875"}``` |
 pressure | unit, value | ```{"unit":"hPa", "value":"1011.584716796875"}``` |

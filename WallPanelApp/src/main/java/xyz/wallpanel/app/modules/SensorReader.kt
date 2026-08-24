@@ -207,19 +207,81 @@ constructor(private val context: Context){
         val chargePlug = batteryStatus?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
         val usbCharge = chargePlug == BatteryManager.BATTERY_PLUGGED_USB
         val acCharge = chargePlug == BatteryManager.BATTERY_PLUGGED_AC
+        val wirelessCharge = chargePlug == BatteryManager.BATTERY_PLUGGED_WIRELESS
         val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val batteryLevel = if (level >= 0 && scale > 0) {
+            (level * 100f / scale).toInt()
+        } else {
+            level
+        }
+        val health = batteryStatus?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) ?: -1
+        val temperature = batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val voltage = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+        val technology = batteryStatus?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY)
+        val present = batteryStatus?.getBooleanExtra(BatteryManager.EXTRA_PRESENT, false) ?: false
         val data = JSONObject()
         try {
-            data.put(VALUE, level)
+            data.put(VALUE, batteryLevel)
             data.put(UNIT, UNIT_PERCENTAGE)
             data.put(CHARGING, isCharging)
             data.put(AC_PLUGGED, acCharge)
             data.put(USB_PLUGGED, usbCharge)
+            data.put(WIRELESS_PLUGGED, wirelessCharge)
+            data.put(PLUGGED, getChargePlugName(chargePlug))
+            data.put(STATUS, getBatteryStatusName(batteryStatusIntExtra))
+            data.put(HEALTH, getBatteryHealthName(health))
+            data.put(SCALE, scale)
+            data.put(LEVEL, level)
+            data.put(PRESENT, present)
+            if (temperature >= 0) {
+                data.put(TEMPERATURE, temperature / 10f)
+                data.put(TEMPERATURE_UNIT, UNIT_C)
+            }
+            if (voltage >= 0) {
+                data.put(VOLTAGE, voltage / 1000f)
+                data.put(VOLTAGE_MV, voltage)
+            }
+            if (!technology.isNullOrBlank()) {
+                data.put(TECHNOLOGY, technology)
+            }
         } catch (ex: JSONException) {
             ex.printStackTrace()
         }
 
         publishSensorData(BATTERY, data)
+    }
+
+    private fun getBatteryStatusName(status: Int): String {
+        return when (status) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
+            BatteryManager.BATTERY_STATUS_FULL -> "full"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not_charging"
+            else -> "unknown"
+        }
+    }
+
+    private fun getBatteryHealthName(health: Int): String {
+        return when (health) {
+            BatteryManager.BATTERY_HEALTH_COLD -> "cold"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "dead"
+            BatteryManager.BATTERY_HEALTH_GOOD -> "good"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "over_voltage"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "overheat"
+            BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE -> "unspecified_failure"
+            else -> "unknown"
+        }
+    }
+
+    private fun getChargePlugName(chargePlug: Int): String {
+        return when (chargePlug) {
+            0 -> "none"
+            BatteryManager.BATTERY_PLUGGED_AC -> "ac"
+            BatteryManager.BATTERY_PLUGGED_USB -> "usb"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
+            else -> "unknown"
+        }
     }
 
 
@@ -228,6 +290,17 @@ constructor(private val context: Context){
         const val CHARGING: String = "charging"
         const val AC_PLUGGED: String = "acPlugged"
         const val USB_PLUGGED: String = "usbPlugged"
+        const val WIRELESS_PLUGGED: String = "wirelessPlugged"
+        const val PLUGGED: String = "plugged"
+        const val STATUS: String = "status"
+        const val HEALTH: String = "health"
+        const val SCALE: String = "scale"
+        const val LEVEL: String = "level"
+        const val PRESENT: String = "present"
+        const val VOLTAGE: String = "voltage"
+        const val VOLTAGE_MV: String = "voltageMv"
+        const val TEMPERATURE_UNIT: String = "temperatureUnit"
+        const val TECHNOLOGY: String = "technology"
         const val HUMIDITY: String = "humidity"
         const val LIGHT: String = "light"
         const val PRESSURE: String = "pressure"

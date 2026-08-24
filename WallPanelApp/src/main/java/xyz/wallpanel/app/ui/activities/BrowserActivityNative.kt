@@ -113,6 +113,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
         configureConnection()
         configureWebView(binding.root)
         initWebPageLoad()
+        intent.getStringExtra(EXTRA_LOAD_URL)?.let { loadWebViewUrl(it) }
     }
 
     override fun onStart() {

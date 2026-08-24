@@ -166,6 +166,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleWakeIntent(intent)
+        intent.getStringExtra(EXTRA_LOAD_URL)?.let { loadWebViewUrl(it) }
     }
 
     private fun handleWakeIntent(intent: Intent?) {
@@ -550,6 +551,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         const val BROADCAST_ACTION_OPEN_SETTINGS = "BROADCAST_ACTION_OPEN_SETTINGS"
         const val EXTRA_TURN_SCREEN_ON = "EXTRA_TURN_SCREEN_ON"
         const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
+        const val EXTRA_LOAD_URL = "EXTRA_LOAD_URL"
         const val REQUEST_CODE_PERMISSION_AUDIO = 12
         const val REQUEST_CODE_PERMISSION_CAMERA = 13
     }

@@ -213,7 +213,7 @@
     <string name="text_camera_pattern">{0}: {1} Camera {3}x{4} {2}º</string>
 
     <string name="pref_title_battery">Battery</string>
-    <string name="pref_summary_battery">Battery Level, USB Plugged, AC Plugged, Charging</string>
+    <string name="pref_summary_battery">Battery Level, Charging, Plugged Source, Status, Health, Voltage, Temperature</string>
     <string name="text_loading_percent">Loading %1$s%% %2$s</string>
     <string name="dialog_no_camera_permissions">This feature requires the camera permissions. Go to the device settings, then turn on permissions for this application.</string>
     <string name="toast_storage_granted">Storage permissions granted…</string>
@@ -271,7 +271,13 @@
     <string name="mqtt_sensor_battery_level">Battery Level</string>
     <string name="mqtt_sensor_usb_plugged">USB Plugged</string>
     <string name="mqtt_sensor_ac_plugged">AC Plugged</string>
+    <string name="mqtt_sensor_wireless_plugged">Wireless Plugged</string>
     <string name="mqtt_sensor_charging">Charging</string>
+    <string name="mqtt_sensor_battery_temperature">Battery Temperature</string>
+    <string name="mqtt_sensor_battery_voltage">Battery Voltage</string>
+    <string name="mqtt_sensor_battery_status">Battery Status</string>
+    <string name="mqtt_sensor_battery_health">Battery Health</string>
+    <string name="mqtt_sensor_battery_plugged">Battery Plugged Source</string>
     <string name="mqtt_sensor_temperature">Temperature</string>
     <string name="mqtt_sensor_light">Light</string>
     <string name="mqtt_sensor_magnetic_field">Magnetic Field</string>

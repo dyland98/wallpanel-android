@@ -54,6 +54,7 @@ import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_A
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_OPEN_SETTINGS
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_ACTION_RELOAD_PAGE
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_KEEP_AWAKE
+import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_LOAD_URL
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_TURN_SCREEN_ON
 import xyz.wallpanel.app.utils.MqttUtils
 import xyz.wallpanel.app.utils.MqttUtils.Companion.COMMAND_AUDIO
@@ -637,8 +638,14 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
                     restartCamera()
                 }
             }
-            if (commandJson.has(COMMAND_URL)) {
-                browseUrl(commandJson.getString(COMMAND_URL))
+            val commandUrl = if (commandJson.has(COMMAND_URL)) {
+                commandJson.getString(COMMAND_URL)
+            } else {
+                null
+            }
+            val wakeIncludesUrl = commandUrl != null && commandJson.has(COMMAND_WAKE)
+            if (commandUrl != null && !wakeIncludesUrl) {
+                browseUrl(commandUrl)
             }
             if (commandJson.has(COMMAND_RELAUNCH)) {
                 if (commandJson.getBoolean(COMMAND_RELAUNCH)) {
@@ -650,9 +657,9 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
                     val fallback = configuration.inactivityTime/1000 // if no wake time, use inactivity time, convert to seconds
                     val wakeTime = commandJson.optLong(COMMAND_WAKETIME, fallback) * 1000 // convert to milliseconds
                     if(wakeTime > 0) {
-                        wakeScreenOn(wakeTime)
+                        wakeScreenOn(wakeTime, commandUrl)
                     } else {
-                        wakeScreen()
+                        wakeScreen(commandUrl)
                     }
                 } else {
                     wakeScreenOff()
@@ -749,29 +756,30 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
     }
 
     // TODO temporarily wake screen
-    private fun wakeScreen() {
-        bringBrowserActivityToFront(false)
+    private fun wakeScreen(url: String? = null) {
+        bringBrowserActivityToFront(false, url)
         val intent = Intent(BROADCAST_SCREEN_WAKE)
         val bm = LocalBroadcastManager.getInstance(applicationContext)
         bm.sendBroadcast(intent)
     }
 
     @SuppressLint("WakelockTimeout")
-    private fun wakeScreenOn(wakeTime: Long) {
-        bringBrowserActivityToFront(true)
+    private fun wakeScreenOn(wakeTime: Long, url: String? = null) {
+        bringBrowserActivityToFront(true, url)
         wakeScreenHandler.removeCallbacks(clearWakeScreenRunnable)
         partialWakeLock?.acquire(wakeTime)
         wakeScreenHandler.postDelayed(clearWakeScreenRunnable, wakeTime)
         sendWakeScreenOn()
     }
 
-    private fun bringBrowserActivityToFront(keepAwake: Boolean) {
+    private fun bringBrowserActivityToFront(keepAwake: Boolean, url: String? = null) {
         val intent = Intent(applicationContext, BrowserActivityNative::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.putExtra(EXTRA_TURN_SCREEN_ON, true)
         intent.putExtra(EXTRA_KEEP_AWAKE, keepAwake)
+        url?.let { intent.putExtra(EXTRA_LOAD_URL, it) }
         try {
             startActivity(intent)
         } catch (e: SecurityException) {
@@ -875,7 +883,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         return deviceJson
     }
 
-    private fun getSensorDiscoveryDef(displayName: String, stateTopic: String, deviceClass: String?, unit: String?, sensorId: String): JSONObject {
+    private fun getSensorDiscoveryDef(displayName: String, stateTopic: String, deviceClass: String?, unit: String?, sensorId: String, fieldName: String = "value"): JSONObject {
         val discoveryDef = JSONObject()
         if (configuration.mqttLegacyDiscoveryEntities) {
             discoveryDef.put("name", "${configuration.mqttDiscoveryDeviceName} ${displayName}")
@@ -899,10 +907,39 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         if (unit != null) {
             discoveryDef.put("unit_of_measurement", unit)
         }
-        discoveryDef.put("value_template", "{{ value_json.value | float }}")
+        discoveryDef.put("value_template", "{{ value_json.${fieldName} | float }}")
         if (deviceClass != null) {
             discoveryDef.put("device_class", deviceClass)
         }
+        discoveryDef.put("unique_id", "wallpanel_${configuration.mqttClientId}_${sensorId}")
+        discoveryDef.put("device", getDeviceDiscoveryDef())
+        discoveryDef.put("availability_topic", "${configuration.mqttBaseTopic}connection")
+
+        return discoveryDef
+    }
+
+    private fun getTextSensorDiscoveryDef(displayName: String, stateTopic: String, fieldName: String, sensorId: String): JSONObject {
+        val discoveryDef = JSONObject()
+        if (configuration.mqttLegacyDiscoveryEntities) {
+            discoveryDef.put("name", "${configuration.mqttDiscoveryDeviceName} ${displayName}")
+        } else {
+            discoveryDef.put("name", displayName)
+        }
+        val originDef = JSONObject()
+        var version = ""
+        try {
+            val pInfo: PackageInfo =
+                applicationContext.packageManager.getPackageInfo(applicationContext.packageName, 0)
+            version = pInfo.versionName.orEmpty()
+        } catch (e: PackageManager.NameNotFoundException) {
+            e.printStackTrace()
+        }
+        originDef.put("name", "WallPanel")
+        originDef.put("sw", version)
+        originDef.put("url", "https://wallpanel.xyz")
+        discoveryDef.put("origin", originDef)
+        discoveryDef.put("state_topic", "${configuration.mqttBaseTopic}${stateTopic}")
+        discoveryDef.put("value_template", "{{ value_json.${fieldName} }}")
         discoveryDef.put("unique_id", "wallpanel_${configuration.mqttClientId}_${sensorId}")
         discoveryDef.put("device", getDeviceDiscoveryDef())
         discoveryDef.put("availability_topic", "${configuration.mqttBaseTopic}connection")
@@ -950,8 +987,20 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/usbPlugged/config", usbPluggedDiscovery.toString(), true)
             val acPluggedDiscovery = getBinarySensorDiscoveryDef(getString(R.string.mqtt_sensor_ac_plugged), "sensor/battery", "acPlugged", "power", "acPlugged")
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/acPlugged/config", acPluggedDiscovery.toString(), true)
+            val wirelessPluggedDiscovery = getBinarySensorDiscoveryDef(getString(R.string.mqtt_sensor_wireless_plugged), "sensor/battery", "wirelessPlugged", "power", "wirelessPlugged")
+            publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/wirelessPlugged/config", wirelessPluggedDiscovery.toString(), true)
             val chargeDiscovery = getBinarySensorDiscoveryDef(getString(R.string.mqtt_sensor_charging), "sensor/battery", "charging", "battery_charging", "charging")
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/charging/config", chargeDiscovery.toString(), true)
+            val batteryTemperatureDiscovery = getSensorDiscoveryDef(getString(R.string.mqtt_sensor_battery_temperature), "sensor/battery", "temperature", "°C", "batteryTemperature", "temperature")
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryTemperature/config", batteryTemperatureDiscovery.toString(), true)
+            val batteryVoltageDiscovery = getSensorDiscoveryDef(getString(R.string.mqtt_sensor_battery_voltage), "sensor/battery", "voltage", "V", "batteryVoltage", "voltage")
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryVoltage/config", batteryVoltageDiscovery.toString(), true)
+            val batteryStatusDiscovery = getTextSensorDiscoveryDef(getString(R.string.mqtt_sensor_battery_status), "sensor/battery", "status", "batteryStatus")
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryStatus/config", batteryStatusDiscovery.toString(), true)
+            val batteryHealthDiscovery = getTextSensorDiscoveryDef(getString(R.string.mqtt_sensor_battery_health), "sensor/battery", "health", "batteryHealth")
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryHealth/config", batteryHealthDiscovery.toString(), true)
+            val batteryPluggedDiscovery = getTextSensorDiscoveryDef(getString(R.string.mqtt_sensor_battery_plugged), "sensor/battery", "plugged", "batteryPlugged")
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryPlugged/config", batteryPluggedDiscovery.toString(), true)
             val sensors = sensorReader.getSensors()
             for (sensor in sensors) {
                 if (sensor.sensorType != null) {
@@ -964,7 +1013,13 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
             publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/battery/config", "", false)
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/usbPlugged/config", "", false)
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/acPlugged/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/wirelessPlugged/config", "", false)
             publishMessage("${configuration.mqttDiscoveryTopic}/binary_sensor/${configuration.mqttClientId}/charging/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryTemperature/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryVoltage/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryStatus/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryHealth/config", "", false)
+            publishMessage("${configuration.mqttDiscoveryTopic}/sensor/${configuration.mqttClientId}/batteryPlugged/config", "", false)
             val sensors = sensorReader.getSensors()
             for (sensor in sensors) {
                 if (sensor.sensorType != null) {
