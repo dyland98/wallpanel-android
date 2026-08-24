@@ -384,6 +384,9 @@ class SettingsFragment : BaseSettingsFragment() {
                 if (configuration.kioskMode) {
                     configuration.fullScreen = true
                     fullScreenPreference.isChecked = true
+                } else {
+                    configuration.fullScreen = false
+                    fullScreenPreference.isChecked = false
                 }
             }
             PREF_SETTINGS_BUTTON_TRANSPARENT -> {

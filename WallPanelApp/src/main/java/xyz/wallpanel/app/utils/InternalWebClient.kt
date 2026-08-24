@@ -17,11 +17,12 @@ import xyz.wallpanel.app.ui.views.WebClientCallback
 import java.util.*
 import javax.inject.Inject
 
-open class InternalWebClient(val resources: Resources, private val callback: WebClientCallback, val configuration: Configuration) :
-    WebViewClient() {
-
-    @Inject
-    lateinit var dialogUtils: DialogUtils
+open class InternalWebClient(
+    val resources: Resources,
+    private val dialogUtils: DialogUtils,
+    private val callback: WebClientCallback,
+    val configuration: Configuration
+) : WebViewClient() {
 
     private var pageLoaded = false
     private var currentUrl = ""
@@ -111,6 +112,9 @@ open class InternalWebClient(val resources: Resources, private val callback: Web
         }
         if (isCurrentUrl(url)) {
             pageLoaded = true
+        }
+        if (!callback.isFinishing()) {
+            callback.pageLoadComplete(url)
         }
     }
 

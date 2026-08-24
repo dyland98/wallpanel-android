@@ -18,6 +18,7 @@ package xyz.wallpanel.app.ui.activities
 
 import android.annotation.SuppressLint
 import android.app.ActivityManager
+import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -147,6 +148,9 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
 
         decorView = window.decorView
 
@@ -238,6 +242,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         filter.addAction(BROADCAST_SERVICE_STARTED)
         val bm = LocalBroadcastManager.getInstance(this)
         bm.registerReceiver(mBroadcastReceiver, filter)
+        dismissKeyguardIfNeeded()
         applyKioskMode()
         if (hasWakeScreen) {
             clearInactivityTimer()
@@ -273,6 +278,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         } else {
             startService(wallPanelService)
         }
+        dismissKeyguardIfNeeded()
         resetScreenBrightness(false)
         applyKioskMode()
     }
@@ -286,6 +292,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
     override fun onUserInteraction() {
         onWindowFocusChanged(true)
+        dismissKeyguardIfNeeded()
         Timber.d("onUserInteraction")
         if (!userPresent) {
             userPresent = true
@@ -329,6 +336,22 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         }
     }
 
+    private fun dismissKeyguardIfNeeded() {
+        try {
+            val keyguardManager = getSystemService(KeyguardManager::class.java)
+            if (keyguardManager?.isKeyguardLocked == true) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    keyguardManager.requestDismissKeyguard(this, null)
+                } else {
+                    @Suppress("DEPRECATION")
+                    window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to dismiss keyguard automatically")
+        }
+    }
+
     private fun applySystemUiVisibility() {
         val shouldHideBars = configuration.fullScreen || configuration.kioskMode
         val visibility = if (shouldHideBars) {
@@ -355,7 +378,11 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
     private fun applyKioskMode() {
         applySystemUiVisibility()
-        if (!configuration.kioskMode || isInLockTaskMode()) {
+        if (!configuration.kioskMode) {
+            restoreKioskPolicies()
+            return
+        }
+        if (isInLockTaskMode()) {
             return
         }
 
@@ -382,20 +409,22 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
     }
 
     protected fun stopKioskLockTaskForAdmin() {
-        if (!configuration.kioskMode) {
-            return
-        }
-
         try {
             if (isInLockTaskMode()) {
                 stopLockTask()
                 Timber.i("Kiosk LockTask mode stopped for admin access")
             }
-            if (isDeviceOwner() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                devicePolicyManager().setStatusBarDisabled(deviceAdminComponent(), false)
-            }
+            restoreKioskPolicies()
         } catch (e: Exception) {
             Timber.e(e, "Unable to stop kiosk LockTask mode")
+        }
+    }
+
+    private fun restoreKioskPolicies() {
+        if (isDeviceOwner() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val policyManager = devicePolicyManager()
+            policyManager.setStatusBarDisabled(deviceAdminComponent(), false)
+            policyManager.setKeyguardDisabled(deviceAdminComponent(), false)
         }
     }
 
