@@ -38,6 +38,7 @@ import androidx.lifecycle.LifecycleObserver
 import xyz.wallpanel.app.databinding.ActivityBrowserBinding
 import xyz.wallpanel.app.network.ConnectionLiveData
 import xyz.wallpanel.app.ui.fragments.CodeBottomSheetFragment
+import xyz.wallpanel.app.ui.views.CustomWebView
 import xyz.wallpanel.app.utils.InternalWebChromeClient
 import xyz.wallpanel.app.ui.views.WebClientCallback
 import xyz.wallpanel.app.utils.InternalWebClient
@@ -260,6 +261,19 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
         if (binding.swipeContainer != null && binding.swipeContainer.isRefreshing && configuration.browserRefresh) {
             binding.swipeContainer.isRefreshing = false
         }
+        enforceScreenSleepPolicy()
+    }
+
+    override fun enforceScreenSleepPolicy() {
+        super.enforceScreenSleepPolicy()
+        if (::webView.isInitialized) {
+            setWebViewKeepScreenOn(shouldKeepScreenOn())
+        }
+    }
+
+    private fun setWebViewKeepScreenOn(keepScreenOn: Boolean) {
+        (webView as? CustomWebView)?.setKeepScreenOnAllowed(keepScreenOn)
+        webView.keepScreenOn = keepScreenOn
     }
 
     override fun setWebkitPermissionRequest(request: PermissionRequest?) {
@@ -326,6 +340,7 @@ class BrowserActivityNative : BaseBrowserActivity(), LifecycleObserver, WebClien
     @SuppressLint("ClickableViewAccessibility")
     private fun configureWebView(view: ViewGroup) {
         webView = binding.activityBrowserWebviewNative
+        setWebViewKeepScreenOn(shouldKeepScreenOn())
         // Force links and redirects to open in the WebView instead of in a browser
         configureWebChromeClient()
         configureWebViewClient()

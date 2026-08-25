@@ -56,6 +56,7 @@ import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.BROADCAST_A
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_KEEP_AWAKE
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_LOAD_URL
 import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_TURN_SCREEN_ON
+import xyz.wallpanel.app.ui.activities.BaseBrowserActivity.Companion.EXTRA_WAKE_DURATION
 import xyz.wallpanel.app.utils.MqttUtils
 import xyz.wallpanel.app.utils.MqttUtils.Companion.COMMAND_AUDIO
 import xyz.wallpanel.app.utils.MqttUtils.Companion.COMMAND_BRIGHTNESS
@@ -106,6 +107,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
     private var rtspServer: RtspH264Server? = null
     private var rtspFrameObserver: Observer<H264Frame>? = null
     private var partialWakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var keyguardLock: KeyguardManager.KeyguardLock? = null
     private var audioPlayer: MediaPlayer? = null
@@ -159,13 +161,14 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         // prepare the lock types we may use
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
 
-        //noinspection deprecation
-        partialWakeLock = if (Build.VERSION.SDK_INT > Build.VERSION_CODES.KITKAT) {
-            pm.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "wallPanel:partialWakeLock")
-        } else {
-            pm.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE, "wallPanel:partialWakeLock")
-        }
+        partialWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wallPanel:partialWakeLock")
         partialWakeLock?.setReferenceCounted(false)
+        @Suppress("DEPRECATION")
+        screenWakeLock = pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+            "wallPanel:screenWakeLock"
+        )
+        screenWakeLock?.setReferenceCounted(false)
 
         // wifi lock
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -215,6 +218,11 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
         stopHttp()
         stopRtsp()
         stopPowerOptions()
+        screenWakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+            }
+        }
         reconnectHandler.removeCallbacksAndMessages(null)
     }
 
@@ -757,6 +765,7 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
     // TODO temporarily wake screen
     private fun wakeScreen(url: String? = null) {
+        wakeScreenBriefly()
         bringBrowserActivityToFront(false, url)
         val intent = Intent(BROADCAST_SCREEN_WAKE)
         val bm = LocalBroadcastManager.getInstance(applicationContext)
@@ -765,20 +774,36 @@ class WallPanelService : LifecycleService(), MQTTModule.MQTTListener {
 
     @SuppressLint("WakelockTimeout")
     private fun wakeScreenOn(wakeTime: Long, url: String? = null) {
-        bringBrowserActivityToFront(true, url)
+        wakeScreenBriefly()
+        bringBrowserActivityToFront(true, url, wakeTime)
         wakeScreenHandler.removeCallbacks(clearWakeScreenRunnable)
-        partialWakeLock?.acquire(wakeTime)
         wakeScreenHandler.postDelayed(clearWakeScreenRunnable, wakeTime)
         sendWakeScreenOn()
     }
 
-    private fun bringBrowserActivityToFront(keepAwake: Boolean, url: String? = null) {
+    @Suppress("DEPRECATION")
+    private fun wakeScreenBriefly() {
+        screenWakeLock?.let {
+            if (!it.isHeld) {
+                it.acquire(1000L)
+            }
+        }
+    }
+
+    private fun bringBrowserActivityToFront(
+        keepAwake: Boolean,
+        url: String? = null,
+        wakeDuration: Long = 0L
+    ) {
         val intent = Intent(applicationContext, BrowserActivityNative::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.putExtra(EXTRA_TURN_SCREEN_ON, true)
         intent.putExtra(EXTRA_KEEP_AWAKE, keepAwake)
+        if (wakeDuration > 0L) {
+            intent.putExtra(EXTRA_WAKE_DURATION, wakeDuration)
+        }
         url?.let { intent.putExtra(EXTRA_LOAD_URL, it) }
         try {
             startActivity(intent)

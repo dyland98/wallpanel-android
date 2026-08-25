@@ -152,6 +152,11 @@ class ScreenSaverView : RelativeLayout {
         }
     }
 
+    fun setKeepScreenOnAllowed(allowed: Boolean) {
+        (binding.screenSaverWebView as? CustomWebView)?.setKeepScreenOnAllowed(allowed)
+        binding.screenSaverWebView.keepScreenOn = allowed
+    }
+
     // setup clock size based on screen and weather settings
     private fun setClockViews() {
         val initialRegular = binding.screenSaverClock.textSize

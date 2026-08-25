@@ -180,10 +180,8 @@ class DialogUtils(base: Context?) : ContextWrapper(base), DefaultLifecycleObserv
         val screenSaverView = binding.screenSaverView
         screenSaverView.setOnClickListener(onClickListener)
         screenSaverView.init(hasWeb, webUrl, hasWallpaper, hasClock, rotationInterval)
+        screenSaverView.setKeepScreenOnAllowed(preventSleep)
         screenSaverDialog = buildImmersiveDialog(activity, true, screenSaverView, true)
-        if (screenSaverDialog != null && preventSleep) {
-            screenSaverDialog?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
     }
 
     // immersive dialogs without navigation

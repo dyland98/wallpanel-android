@@ -74,8 +74,10 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
     var wallPanelService: Intent? = null
     private var decorView: View? = null
     private val inactivityHandler: Handler = Handler(Looper.getMainLooper())
+    private val temporaryScreenWakeHandler = Handler(Looper.getMainLooper())
     private var userPresent: Boolean = false
     private var hasWakeScreen = false
+    private var temporaryScreenWakeUntil = 0L
     private var kioskOwnerWarningLogged = false
     var displayProgress = true
     var zoomLevel = 1.0f
@@ -122,11 +124,9 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
                     resetScreenBrightness(false)
                 }
             } else if (BROADCAST_SCREEN_WAKE == intent.action && !isFinishing) {
-                turnScreenOn(false)
                 stopDisconnectTimer()
             } else if (BROADCAST_SCREEN_WAKE_ON == intent.action && !isFinishing) {
                 hasWakeScreen = true
-                turnScreenOn(true)
                 resetScreenBrightness(false)
                 clearInactivityTimer()
             } else if (BROADCAST_SCREEN_WAKE_OFF == intent.action && !isFinishing) {
@@ -146,11 +146,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         displayProgress = configuration.appShowActivity
         zoomLevel = configuration.testZoomLevel
 
-        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
-        window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         decorView = window.decorView
 
@@ -172,38 +168,30 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
     private fun handleWakeIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_TURN_SCREEN_ON, false) == true) {
             val keepAwake = intent.getBooleanExtra(EXTRA_KEEP_AWAKE, false)
+            val wakeDuration = intent.getLongExtra(EXTRA_WAKE_DURATION, 0L)
             if (keepAwake) {
                 hasWakeScreen = true
                 clearInactivityTimer()
             }
-            turnScreenOn(keepAwake)
+            if (wakeDuration > 0L) {
+                enableTemporaryScreenWake(wakeDuration)
+            }
             resetScreenBrightness(false)
         }
     }
 
-    private fun turnScreenOn(keepAwake: Boolean) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                        or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-            )
-        }
-
-        if (keepAwake) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            decorView?.keepScreenOn = true
-        }
+    private fun enableTemporaryScreenWake(duration: Long) {
+        temporaryScreenWakeUntil = System.currentTimeMillis() + duration
+        enforceScreenSleepPolicy()
+        temporaryScreenWakeHandler.removeCallbacksAndMessages(null)
+        temporaryScreenWakeHandler.postDelayed({
+            temporaryScreenWakeUntil = 0L
+            enforceScreenSleepPolicy()
+        }, duration)
     }
 
     private fun clearWakeScreenFlags() {
-        if (!configuration.appPreventSleep) {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            decorView?.keepScreenOn = false
-        }
+        enforceScreenSleepPolicy()
     }
 
     private fun forceWakeScreenOff() {
@@ -227,6 +215,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        enforceScreenSleepPolicy()
         val filter = IntentFilter()
         filter.addAction(BROADCAST_ACTION_LOAD_URL)
         filter.addAction(BROADCAST_ACTION_JS_EXEC)
@@ -266,13 +255,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             )
         }
-        if (configuration.appPreventSleep || hasWakeScreen) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            decorView?.keepScreenOn = true
-        } else {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            decorView?.keepScreenOn = false
-        }
+        enforceScreenSleepPolicy()
         wallPanelService = Intent(this, WallPanelService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(wallPanelService)
@@ -326,6 +309,10 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         Timber.d("inactivityCallback")
         dialogUtils.clearDialogs()
         userPresent = false
+        if (!configuration.appPreventSleep) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            decorView?.keepScreenOn = false
+        }
         showScreenSaver()
     }
 
@@ -335,6 +322,31 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
             applySystemUiVisibility()
             applyKioskMode()
         }
+        enforceScreenSleepPolicy()
+    }
+
+    override fun onWindowAttributesChanged(attributes: WindowManager.LayoutParams) {
+        if (!shouldKeepScreenOn()) {
+            attributes.flags = attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+        }
+        super.onWindowAttributesChanged(attributes)
+    }
+
+    protected open fun enforceScreenSleepPolicy() {
+        if (shouldKeepScreenOn()) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            decorView?.keepScreenOn = true
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            decorView?.keepScreenOn = false
+        }
+    }
+
+    protected fun shouldKeepScreenOn(): Boolean {
+        return ::configuration.isInitialized
+                && (configuration.appPreventSleep
+                || hasWakeScreen
+                || System.currentTimeMillis() < temporaryScreenWakeUntil)
     }
 
     private fun dismissKeyguardIfNeeded() {
@@ -551,6 +563,7 @@ abstract class BaseBrowserActivity : DaggerAppCompatActivity() {
         const val BROADCAST_ACTION_OPEN_SETTINGS = "BROADCAST_ACTION_OPEN_SETTINGS"
         const val EXTRA_TURN_SCREEN_ON = "EXTRA_TURN_SCREEN_ON"
         const val EXTRA_KEEP_AWAKE = "EXTRA_KEEP_AWAKE"
+        const val EXTRA_WAKE_DURATION = "EXTRA_WAKE_DURATION"
         const val EXTRA_LOAD_URL = "EXTRA_LOAD_URL"
         const val REQUEST_CODE_PERMISSION_AUDIO = 12
         const val REQUEST_CODE_PERMISSION_CAMERA = 13

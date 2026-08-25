@@ -32,7 +32,7 @@
             android:layout_height="match_parent"
             android:windowSoftInputMode="adjustResize">
 
-            <WebView
+            <xyz.wallpanel.app.ui.views.CustomWebView
                 android:id="@+id/activity_browser_webview_native"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />

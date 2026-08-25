@@ -21,7 +21,7 @@ class CustomWebView @JvmOverloads constructor(
     privateBrowsing: Boolean = false
 ) : WebView(context, attrs, defStyleAttr, privateBrowsing) {
 
-
+    private var keepScreenOnAllowed = true
     @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     constructor(context: Context, attrs: AttributeSet?, defStyleAttr: Int, defStyleRes: Int) : this(
         context,
@@ -85,6 +85,17 @@ class CustomWebView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> requestDisallow = false
         }
         return super.onTouchEvent(event)
+    }
+
+    fun setKeepScreenOnAllowed(allowed: Boolean) {
+        keepScreenOnAllowed = allowed
+        if (!allowed) {
+            super.setKeepScreenOn(false)
+        }
+    }
+
+    override fun setKeepScreenOn(keepScreenOn: Boolean) {
+        super.setKeepScreenOn(keepScreenOn && keepScreenOnAllowed)
     }
 
     companion object {
